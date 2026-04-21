@@ -1,0 +1,121 @@
+import { useEffect, useRef, useState } from "react";
+
+import type { UserRole } from "../shared/types";
+
+type Props = {
+  fullName?: string;
+  role?: UserRole;
+  onLogout?: () => void;
+  onSettings?: () => void;
+  isEngineeringView?: boolean;
+  onToggleEngineering?: () => void;
+  activePage: "home" | "alarms" | "events";
+  onChangePage: (page: "home" | "alarms" | "events") => void;
+};
+
+export function Header({
+  fullName,
+  role,
+  onLogout,
+  onSettings,
+  isEngineeringView,
+  onToggleEngineering,
+  activePage,
+  onChangePage
+}: Props) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    const handleOutsideClick = (event: MouseEvent) => {
+      if (!menuRef.current?.contains(event.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleOutsideClick);
+    return () => document.removeEventListener("mousedown", handleOutsideClick);
+  }, []);
+
+  const initials =
+    fullName
+      ?.split(" ")
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((item) => item[0]?.toUpperCase())
+      .join("") || "U";
+  const roleLabel = role === "engineer" ? "Muhendis" : role === "operator" ? "Operator" : "Kullanici";
+
+  return (
+    <header className="header">
+      <div className="header-left">
+        <div className="brand-logo-wrap">
+          <img src="/form-logo.png" alt="Form Elektrik" className="logo" />
+        </div>
+        <span className="header-divider" />
+        <div className="customer-logo-wrap">
+          <img
+            className="header-customer-logo"
+            src="/customer-logo-light.png"
+            alt="Musteri Logosu"
+            onError={(event) => {
+              event.currentTarget.src = "/customer-logo-placeholder.svg";
+            }}
+          />
+        </div>
+        <nav className="header-nav">
+          <button className={activePage === "home" ? "active" : ""} onClick={() => onChangePage("home")}>
+            Anasayfa
+          </button>
+          <button className={activePage === "alarms" ? "active" : ""} onClick={() => onChangePage("alarms")}>
+            Alarmlar
+          </button>
+          <button className={activePage === "events" ? "active" : ""} onClick={() => onChangePage("events")}>
+            Olaylar
+          </button>
+        </nav>
+      </div>
+
+      <div className="header-right">
+        {role === "engineer" ? (
+          <button
+            className={`engineering-btn ${isEngineeringView ? "active" : ""}`}
+            onClick={() => onToggleEngineering?.()}
+          >
+            Muhendislik
+          </button>
+        ) : null}
+
+        <div className="profile-menu" ref={menuRef}>
+          <button className="profile-trigger" onClick={() => setMenuOpen((prev) => !prev)}>
+            <div className="profile-text">
+              <strong>{fullName ?? "Kullanici"}</strong>
+              <small>{roleLabel}</small>
+            </div>
+            <div className="profile-avatar">{initials}</div>
+          </button>
+
+          {menuOpen ? (
+            <div className="profile-dropdown">
+              <button
+                onClick={() => {
+                  setMenuOpen(false);
+                  onSettings?.();
+                }}
+              >
+                Ayarlar
+              </button>
+              <button
+                onClick={() => {
+                  setMenuOpen(false);
+                  onLogout?.();
+                }}
+              >
+                Cikis Yap
+              </button>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </header>
+  );
+}
