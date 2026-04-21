@@ -234,6 +234,31 @@ body {
   padding: 9px 10px;
 }
 
+.settings-modal select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 9px 36px 9px 10px;
+  background-color: #fff;
+  background-image:
+    linear-gradient(45deg, transparent 50%, #475569 50%),
+    linear-gradient(135deg, #475569 50%, transparent 50%);
+  background-position:
+    calc(100% - 16px) calc(50% - 2px),
+    calc(100% - 10px) calc(50% - 2px);
+  background-size: 6px 6px, 6px 6px;
+  background-repeat: no-repeat;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.settings-modal select:focus {
+  outline: none;
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.16);
+}
+
 .settings-actions {
   display: flex;
   justify-content: flex-end;
@@ -277,11 +302,13 @@ body {
 .device-filter-row {
   display: flex;
   flex-wrap: nowrap;
-  gap: 6px;
+  gap: 4px;
   margin-bottom: 10px;
   overflow-x: auto;
+  overflow-y: hidden;
   -ms-overflow-style: none;
   scrollbar-width: none;
+  white-space: nowrap;
 }
 
 .device-filter-row::-webkit-scrollbar {
@@ -294,9 +321,10 @@ body {
   background: #f3f4f6;
   color: #1f2937;
   border-radius: 10px;
-  padding: 6px 10px;
-  font-size: 12px;
+  padding: 6px 8px;
+  font-size: 11px;
   cursor: pointer;
+  white-space: nowrap;
 }
 
 .filter-chip.active {
@@ -364,6 +392,14 @@ body {
   min-width: 0;
 }
 
+.dashboard-content {
+  position: relative;
+}
+
+.dashboard-content.map-active {
+  padding: 0;
+}
+
 .engineering-content {
   gap: 12px;
 }
@@ -379,6 +415,21 @@ body {
   background: #f8fafc;
   width: fit-content;
   max-width: 100%;
+}
+
+.dashboard-tabs {
+  margin-left: auto;
+}
+
+.dashboard-content.map-active .dashboard-tabs {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  z-index: 800;
+  margin-left: 0;
+  margin-bottom: 0;
+  background: rgba(248, 250, 252, 0.92);
+  backdrop-filter: blur(2px);
 }
 
 .tabs button {
@@ -435,6 +486,7 @@ body {
   flex-direction: column;
   flex: 1;
   min-height: 0;
+  height: 100%;
 }
 
 .device-pin {

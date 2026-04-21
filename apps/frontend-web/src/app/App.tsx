@@ -22,7 +22,6 @@ import {
 import type { AuthSession, DeviceRow, LiveValue, UserRead } from "../shared/types";
 
 type TabId = "map" | "values";
-type ViewMode = "dashboard" | "engineering";
 type PageMode = "home" | "alarms" | "events";
 type EngineeringPage = "overview" | "devices" | "users";
 
@@ -37,7 +36,6 @@ export function App() {
   const [loadingData, setLoadingData] = useState(false);
   const [selectedDeviceId, setSelectedDeviceId] = useState<number>(0);
   const [activeTab, setActiveTab] = useState<TabId>("map");
-  const [viewMode, setViewMode] = useState<ViewMode>("dashboard");
   const [engineeringPage, setEngineeringPage] = useState<EngineeringPage>("overview");
   const [pageMode, setPageMode] = useState<PageMode>("home");
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -104,7 +102,6 @@ export function App() {
     setDevices([]);
     setLiveValues([]);
     setUsers([]);
-    setViewMode("dashboard");
     setEngineeringPage("overview");
   };
 
@@ -183,55 +180,13 @@ export function App() {
         role={session.role}
         activePage={pageMode}
         onChangePage={setPageMode}
-        isEngineeringView={viewMode === "engineering"}
-        onToggleEngineering={() =>
-          setViewMode((prev) => (prev === "engineering" ? "dashboard" : "engineering"))
-        }
+        isEngineeringView={pageMode === "engineering"}
+        onToggleEngineering={() => setPageMode("engineering")}
         onSettings={handleOpenSettings}
         onLogout={handleLogout}
       />
       <div className="body">
-        {pageMode !== "home" ? (
-          <main className="content">
-            {pageMode === "alarms" ? (
-              <section className="tab-panel">
-                <h3>Alarmlar</h3>
-                <p>Alarm listesi ve alarm gecmisi bu sayfada gosterilecek.</p>
-              </section>
-            ) : null}
-            {pageMode === "events" ? (
-              <section className="tab-panel">
-                <h3>Olaylar</h3>
-                <p>Olay kayitlari ve event gecmisi bu sayfada gosterilecek.</p>
-              </section>
-            ) : null}
-          </main>
-        ) : viewMode === "dashboard" ? (
-          <>
-            <DeviceSidebar devices={devices} selectedId={selectedDeviceId} onSelect={setSelectedDeviceId} />
-            <main className="content">
-              <div className="tabs">
-                <button className={activeTab === "map" ? "active" : ""} onClick={() => setActiveTab("map")}>
-                  Harita
-                </button>
-                <button className={activeTab === "values" ? "active" : ""} onClick={() => setActiveTab("values")}>
-                  Canli Degerler
-                </button>
-                {selectedDevice ? <span className="selected-device">Selected: {selectedDevice.name}</span> : null}
-              </div>
-
-              {loadingData ? <p>Yukleniyor...</p> : null}
-              {activeTab === "map" ? (
-                <DeviceMapTab
-                  devices={devices}
-                  selectedDevice={selectedDevice}
-                  onSelectDevice={setSelectedDeviceId}
-                />
-              ) : null}
-              {activeTab === "values" ? <LiveValuesTab values={liveValues} /> : null}
-            </main>
-          </>
-        ) : (
+        {pageMode === "engineering" ? (
           <main className="content engineering-content">
             <div className="tabs">
               <button
@@ -270,6 +225,46 @@ export function App() {
               <UserManagementPanel users={users} onCreate={handleCreateUser} onDelete={handleDeleteUser} />
             ) : null}
           </main>
+        ) : pageMode !== "home" ? (
+          <main className="content">
+            {pageMode === "alarms" ? (
+              <section className="tab-panel">
+                <h3>Alarmlar</h3>
+                <p>Alarm listesi ve alarm gecmisi bu sayfada gosterilecek.</p>
+              </section>
+            ) : null}
+            {pageMode === "events" ? (
+              <section className="tab-panel">
+                <h3>Olaylar</h3>
+                <p>Olay kayitlari ve event gecmisi bu sayfada gosterilecek.</p>
+              </section>
+            ) : null}
+          </main>
+        ) : (
+          <>
+            <DeviceSidebar devices={devices} selectedId={selectedDeviceId} onSelect={setSelectedDeviceId} />
+            <main className={`content dashboard-content ${activeTab === "map" ? "map-active" : ""}`}>
+              <div className="tabs dashboard-tabs">
+                <button className={activeTab === "map" ? "active" : ""} onClick={() => setActiveTab("map")}>
+                  Harita
+                </button>
+                <button className={activeTab === "values" ? "active" : ""} onClick={() => setActiveTab("values")}>
+                  Tablo
+                </button>
+                {selectedDevice ? <span className="selected-device">Selected: {selectedDevice.name}</span> : null}
+              </div>
+
+              {loadingData ? <p>Yukleniyor...</p> : null}
+              {activeTab === "map" ? (
+                <DeviceMapTab
+                  devices={devices}
+                  selectedDevice={selectedDevice}
+                  onSelectDevice={setSelectedDeviceId}
+                />
+              ) : null}
+              {activeTab === "values" ? <LiveValuesTab values={liveValues} /> : null}
+            </main>
+          </>
         )}
       </div>
 
