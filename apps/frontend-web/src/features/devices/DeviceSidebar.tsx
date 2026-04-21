@@ -1,3 +1,5 @@
+import { useMemo, useState } from "react";
+
 import type { DeviceRow } from "../../shared/types";
 
 type Props = {
@@ -7,12 +9,62 @@ type Props = {
 };
 
 export function DeviceSidebar({ devices, selectedId, onSelect }: Props) {
+  const [search, setSearch] = useState("");
+  const [filter, setFilter] = useState<"all" | "online" | "offline" | "warning">("all");
+
+  const filteredDevices = useMemo(() => {
+    const keyword = search.trim().toLowerCase();
+    return devices.filter((device) => {
+      const matchSearch = keyword.length === 0 || device.name.toLowerCase().includes(keyword);
+      const matchFilter =
+        filter === "all" ||
+        (filter === "online" && device.communicationStatus === "online") ||
+        (filter === "offline" && device.communicationStatus === "offline") ||
+        (filter === "warning" && device.alarmActive);
+      return matchSearch && matchFilter;
+    });
+  }, [devices, filter, search]);
+
+  const onlineCount = devices.filter((item) => item.communicationStatus === "online").length;
+  const offlineCount = devices.filter((item) => item.communicationStatus === "offline").length;
+  const warningCount = devices.filter((item) => item.alarmActive).length;
+
   return (
     <aside className="sidebar">
-      <h2>Devices</h2>
+      <div className="device-search-wrap">
+        <input
+          className="device-search-input"
+          placeholder="Cihaz ara..."
+          value={search}
+          onChange={(event) => setSearch(event.target.value)}
+        />
+      </div>
+      <div className="device-filter-row">
+        <button className={`filter-chip ${filter === "all" ? "active" : ""}`} onClick={() => setFilter("all")}>
+          Tumu ({devices.length})
+        </button>
+        <button
+          className={`filter-chip ${filter === "online" ? "active" : ""}`}
+          onClick={() => setFilter("online")}
+        >
+          Cevrimici ({onlineCount})
+        </button>
+        <button
+          className={`filter-chip ${filter === "offline" ? "active" : ""}`}
+          onClick={() => setFilter("offline")}
+        >
+          Cevrimdisi ({offlineCount})
+        </button>
+        <button
+          className={`filter-chip ${filter === "warning" ? "active" : ""}`}
+          onClick={() => setFilter("warning")}
+        >
+          Uyari ({warningCount})
+        </button>
+      </div>
       <div className="device-list">
-        {devices.length === 0 ? <p>Kayitli cihaz yok. Engineer rolunde cihaz ekleyin.</p> : null}
-        {devices.map((device) => (
+        {filteredDevices.length === 0 ? <p>Cihaz bulunamadi.</p> : null}
+        {filteredDevices.map((device) => (
           <button
             key={device.id}
             className={`device-row ${selectedId === device.id ? "selected" : ""}`}

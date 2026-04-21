@@ -43,7 +43,8 @@ export function Header({
       .slice(0, 2)
       .map((item) => item[0]?.toUpperCase())
       .join("") || "U";
-  const roleLabel = role === "engineer" ? "Muhendis" : role === "operator" ? "Operator" : "Kullanici";
+  const roleLabel =
+    role === "installer" ? "Kurulumcu" : role === "engineer" ? "Muhendis" : role === "operator" ? "Operator" : "Kullanici";
 
   return (
     <header className="header">

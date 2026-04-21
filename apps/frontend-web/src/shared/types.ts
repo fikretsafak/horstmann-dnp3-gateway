@@ -19,7 +19,7 @@ export type LiveValue = {
   sourceTimestamp: string;
 };
 
-export type UserRole = "operator" | "engineer";
+export type UserRole = "operator" | "engineer" | "installer";
 
 export type AuthSession = {
   accessToken: string;

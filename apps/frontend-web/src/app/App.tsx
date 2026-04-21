@@ -24,6 +24,7 @@ import type { AuthSession, DeviceRow, LiveValue, UserRead } from "../shared/type
 type TabId = "map" | "values";
 type ViewMode = "dashboard" | "engineering";
 type PageMode = "home" | "alarms" | "events";
+type EngineeringPage = "overview" | "devices" | "users";
 
 export function App() {
   const [session, setSession] = useState<AuthSession | null>(() => loadSession());
@@ -37,6 +38,7 @@ export function App() {
   const [selectedDeviceId, setSelectedDeviceId] = useState<number>(0);
   const [activeTab, setActiveTab] = useState<TabId>("map");
   const [viewMode, setViewMode] = useState<ViewMode>("dashboard");
+  const [engineeringPage, setEngineeringPage] = useState<EngineeringPage>("overview");
   const [pageMode, setPageMode] = useState<PageMode>("home");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsFullName, setSettingsFullName] = useState("");
@@ -103,6 +105,7 @@ export function App() {
     setLiveValues([]);
     setUsers([]);
     setViewMode("dashboard");
+    setEngineeringPage("overview");
   };
 
   const reloadUsers = async () => {
@@ -209,30 +212,61 @@ export function App() {
             <main className="content">
               <div className="tabs">
                 <button className={activeTab === "map" ? "active" : ""} onClick={() => setActiveTab("map")}>
-                  Map
+                  Harita
                 </button>
                 <button className={activeTab === "values" ? "active" : ""} onClick={() => setActiveTab("values")}>
-                  Live Values
+                  Canli Degerler
                 </button>
                 {selectedDevice ? <span className="selected-device">Selected: {selectedDevice.name}</span> : null}
               </div>
 
               {loadingData ? <p>Yukleniyor...</p> : null}
-              {activeTab === "map" ? <DeviceMapTab devices={devices} /> : null}
+              {activeTab === "map" ? (
+                <DeviceMapTab
+                  devices={devices}
+                  selectedDevice={selectedDevice}
+                  onSelectDevice={setSelectedDeviceId}
+                />
+              ) : null}
               {activeTab === "values" ? <LiveValuesTab values={liveValues} /> : null}
             </main>
           </>
         ) : (
           <main className="content engineering-content">
-            <section className="tab-panel">
-              <h3>Muhendislik Paneli</h3>
-              <p>Cihaz ve kullanici islemleri bu sayfadan yonetilir.</p>
-            </section>
-            <section className="tab-panel">
-              <h3>Cihaz Yonetimi</h3>
-              <p>Cihaz ekle/duzenle islemleri bir sonraki adimda bu bolume tasinacak.</p>
-            </section>
-            {session.role === "engineer" ? (
+            <div className="tabs">
+              <button
+                className={engineeringPage === "overview" ? "active" : ""}
+                onClick={() => setEngineeringPage("overview")}
+              >
+                Ozet
+              </button>
+              <button
+                className={engineeringPage === "devices" ? "active" : ""}
+                onClick={() => setEngineeringPage("devices")}
+              >
+                Cihazlar
+              </button>
+              <button
+                className={engineeringPage === "users" ? "active" : ""}
+                onClick={() => setEngineeringPage("users")}
+              >
+                Kullanicilar
+              </button>
+            </div>
+
+            {engineeringPage === "overview" ? (
+              <section className="tab-panel">
+                <h3>Muhendislik Paneli</h3>
+                <p>Bu alandan cihaz, kullanici ve sistem yonetimi alt sayfalarina gecis yapabilirsiniz.</p>
+              </section>
+            ) : null}
+            {engineeringPage === "devices" ? (
+              <section className="tab-panel">
+                <h3>Cihaz Yonetimi</h3>
+                <p>Cihaz ekle/duzenle/sil islemleri bu alt sayfaya tasinacak.</p>
+              </section>
+            ) : null}
+            {engineeringPage === "users" && session.role !== "operator" ? (
               <UserManagementPanel users={users} onCreate={handleCreateUser} onDelete={handleDeleteUser} />
             ) : null}
           </main>
