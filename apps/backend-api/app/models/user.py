@@ -11,6 +11,7 @@ class User(Base):
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     username: Mapped[str] = mapped_column(String(80), unique=True, index=True)
     email: Mapped[str] = mapped_column(String(255), unique=True, index=True)
+    phone_number: Mapped[str | None] = mapped_column(String(32), nullable=True)
     full_name: Mapped[str] = mapped_column(String(255))
     hashed_password: Mapped[str] = mapped_column(String(255))
     role: Mapped[UserRole] = mapped_column(Enum(UserRole), nullable=False)

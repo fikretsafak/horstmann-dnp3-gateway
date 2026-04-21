@@ -22,29 +22,29 @@ export function LoginForm({ onSubmit, loading, error }: Props) {
           <img
             className="customer-logo"
             src="/customer-logo.png"
-            alt="Musteri Logo"
+            alt="Müşteri Logo"
             onError={(event) => {
               event.currentTarget.src = "/customer-logo-placeholder.svg";
             }}
           />
-          <h2>Giris Yap</h2>
+          <h2>Giriş Yap</h2>
           <label>
-            Kullanici Adi
+            Kullanıcı Adı
             <input value={username} onChange={(event) => setUsername(event.target.value)} required />
           </label>
           <label>
-            Sifre
+            Şifre
             <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required />
           </label>
           {error ? <p className="error-text">{error}</p> : null}
           <button type="submit" disabled={loading}>
-            {loading ? "Giris yapiliyor..." : "Giris"}
+            {loading ? "Giriş yapılıyor..." : "Giriş"}
           </button>
           <img className="form-logo-bottom" src="/form-logo.png" alt="Form Elektrik" />
         </form>
 
         <aside className="login-visual">
-          <img className="visual-image" src="/login-visual.png" alt="Form Elektrik Gorseli" />
+          <img className="visual-image" src="/login-visual.png" alt="Form Elektrik Görseli" />
         </aside>
       </div>
     </div>

@@ -27,6 +27,8 @@ body {
   justify-content: space-between;
   padding: 0 14px;
   border-bottom: 1px solid rgba(148, 163, 184, 0.25);
+  position: relative;
+  z-index: 1100;
 }
 
 .header-left {
@@ -72,6 +74,20 @@ body {
   border-radius: 8px;
   padding: 7px 10px;
   cursor: pointer;
+  transition: background-color 0.18s ease, border-color 0.18s ease, transform 0.12s ease;
+}
+
+.header-nav button:hover {
+  background: rgba(30, 41, 59, 0.45);
+}
+
+.header-nav button:active {
+  transform: scale(0.97);
+}
+
+.header-nav button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(147, 197, 253, 0.35);
 }
 
 .header-nav button.active {
@@ -94,6 +110,20 @@ body {
   border-radius: 8px;
   padding: 8px 12px;
   cursor: pointer;
+  transition: transform 0.12s ease, filter 0.18s ease, box-shadow 0.2s ease;
+}
+
+.engineering-btn:hover {
+  filter: brightness(1.08);
+}
+
+.engineering-btn:active {
+  transform: scale(0.97);
+}
+
+.engineering-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(147, 197, 253, 0.35);
 }
 
 .engineering-btn.active {
@@ -136,6 +166,20 @@ body {
   justify-content: flex-end;
   gap: 6px;
   cursor: pointer;
+  transition: background-color 0.18s ease, transform 0.12s ease;
+}
+
+.profile-trigger:hover {
+  background: rgba(51, 65, 85, 0.35);
+}
+
+.profile-trigger:active {
+  transform: scale(0.98);
+}
+
+.profile-trigger:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(147, 197, 253, 0.35);
 }
 
 .profile-text {
@@ -181,7 +225,7 @@ body {
   background: #fff;
   box-shadow: 0 10px 24px rgba(15, 23, 42, 0.2);
   overflow: hidden;
-  z-index: 30;
+  z-index: 1200;
 }
 
 .profile-dropdown button {
@@ -198,13 +242,17 @@ body {
   background: #eff6ff;
 }
 
+.profile-dropdown button:active {
+  background: #dbeafe;
+}
+
 .settings-modal-backdrop {
   position: fixed;
   inset: 0;
   background: rgba(15, 23, 42, 0.45);
   display: grid;
   place-items: center;
-  z-index: 50;
+  z-index: 3000;
 }
 
 .settings-modal {
@@ -271,6 +319,156 @@ body {
   color: #fff;
   border-radius: 8px;
   padding: 8px 12px;
+  cursor: pointer;
+  transition: transform 0.12s ease, filter 0.2s ease, box-shadow 0.2s ease;
+}
+
+.settings-actions button:hover {
+  filter: brightness(1.05);
+}
+
+.settings-actions button:active {
+  transform: scale(0.97);
+}
+
+.settings-actions button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.25);
+}
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.panel-head h3 {
+  margin: 0;
+}
+
+.add-user-btn {
+  border: 1px solid #1d4ed8;
+  background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+  color: #fff;
+  border-radius: 10px;
+  padding: 8px 14px;
+  font-weight: 700;
+  box-shadow: 0 8px 18px rgba(37, 99, 235, 0.25);
+  cursor: pointer;
+  transition: transform 0.12s ease, filter 0.2s ease, box-shadow 0.2s ease;
+}
+
+.add-user-btn:hover {
+  filter: brightness(1.05);
+}
+
+.add-user-btn:active {
+  transform: scale(0.97);
+  box-shadow: 0 4px 10px rgba(37, 99, 235, 0.24);
+}
+
+.add-user-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.25);
+}
+
+.edit-btn {
+  border: 1px solid #0ea5e9;
+  background: #0ea5e9;
+  color: #fff;
+  border-radius: 8px;
+  padding: 6px 10px;
+  margin-right: 8px;
+  cursor: pointer;
+  transition: transform 0.12s ease, filter 0.2s ease, box-shadow 0.2s ease;
+}
+
+.secondary-btn {
+  border: 1px solid #475569;
+  background: #64748b;
+  color: #fff;
+  border-radius: 8px;
+  padding: 6px 10px;
+  margin-right: 8px;
+  cursor: pointer;
+  transition: transform 0.12s ease, filter 0.2s ease, box-shadow 0.2s ease;
+}
+
+.secondary-btn:hover {
+  filter: brightness(1.07);
+}
+
+.secondary-btn:active {
+  transform: scale(0.97);
+}
+
+.secondary-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(100, 116, 139, 0.25);
+}
+
+.edit-btn:hover {
+  filter: brightness(1.07);
+}
+
+.edit-btn:active {
+  transform: scale(0.97);
+}
+
+.edit-btn:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(14, 165, 233, 0.25);
+}
+
+.actions-header {
+  text-align: right !important;
+}
+
+.actions-cell {
+  text-align: right !important;
+  white-space: nowrap;
+}
+
+.action-btn {
+  min-height: 34px;
+  line-height: 1;
+  padding: 0 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.actions-cell .danger-btn {
+  margin-right: 0;
+}
+
+.notify-group {
+  border: 1px solid #d1d5db;
+  border-radius: 10px;
+  padding: 10px;
+  margin: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.notify-group legend {
+  font-size: 12px;
+  color: #475569;
+  padding: 0 4px;
+}
+
+.notify-option {
+  display: flex !important;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.helper-text {
+  margin: 0;
+  color: #475569;
+  font-size: 13px;
 }
 
 .body {
@@ -325,6 +523,20 @@ body {
   font-size: 11px;
   cursor: pointer;
   white-space: nowrap;
+  transition: transform 0.12s ease, background-color 0.18s ease, border-color 0.18s ease;
+}
+
+.filter-chip:hover {
+  background: #e5e7eb;
+}
+
+.filter-chip:active {
+  transform: scale(0.96);
+}
+
+.filter-chip:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
 }
 
 .filter-chip.active {
@@ -440,7 +652,20 @@ body {
   padding: 7px 12px;
   font-weight: 600;
   cursor: pointer;
-  transition: background-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+  transition: background-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease, transform 0.12s ease;
+}
+
+.tabs button:hover {
+  background: #e2e8f0;
+}
+
+.tabs button:active {
+  transform: scale(0.97);
+}
+
+.tabs button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.22);
 }
 
 .tabs button.active {
@@ -463,6 +688,181 @@ body {
   padding: 12px;
   overflow: auto;
 }
+
+.alarms-layout {
+  display: block;
+  min-height: 0;
+  height: 100%;
+  flex: 1;
+}
+
+.alarms-list-card,
+.alarms-detail-card {
+  background: #fff;
+  border: 1px solid #d1d5db;
+  border-radius: 10px;
+  padding: 12px;
+}
+
+.alarms-list-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+  height: 100%;
+}
+
+.alarms-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.alarms-filter-row {
+  display: flex;
+  gap: 8px;
+  flex: 0 0 auto;
+  white-space: nowrap;
+  align-items: center;
+}
+
+.alarms-toolbar .device-search-input {
+  flex: 1 1 auto;
+  min-width: 240px;
+}
+
+.alarms-table-wrap {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.alarms-filter-row select,
+.alarms-detail-card select,
+.alarm-comments textarea {
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: #fff;
+}
+
+.alarm-row-active {
+  background: #eff6ff;
+}
+
+.alarm-state {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 3px 8px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.state-open {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.state-ack {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.state-reset {
+  background: #dcfce7;
+  color: #166534;
+}
+
+.alarm-pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.level-critical {
+  background: #fee2e2;
+  color: #b91c1c;
+}
+
+.level-warning {
+  background: #fef3c7;
+  color: #92400e;
+}
+
+.level-info {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+
+.alarms-detail-card {
+  display: grid;
+  gap: 10px;
+}
+
+.alarm-detail-modal {
+  width: min(760px, 95vw);
+}
+
+.alarm-detail-modal-body {
+  display: grid;
+  gap: 10px;
+}
+
+.alarms-detail-card h3 {
+  margin: 0;
+}
+
+.alarm-comments {
+  display: grid;
+  gap: 8px;
+}
+
+.alarm-comments h4 {
+  margin: 0;
+}
+
+.alarm-comment-list {
+  max-height: 220px;
+  overflow: auto;
+  display: grid;
+  gap: 8px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.alarm-comment-item {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 8px;
+  background: #f8fafc;
+}
+
+.alarm-comment-item p {
+  margin: 4px 0 0;
+  font-size: 13px;
+}
+
+.alarm-comment-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.alarm-comment-meta span {
+  font-size: 11px;
+  color: #64748b;
+}
+
 
 .map-placeholder {
   display: grid;

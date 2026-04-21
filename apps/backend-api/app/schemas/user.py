@@ -7,6 +7,7 @@ class UserRead(BaseModel):
     id: int
     username: str
     email: str
+    phone_number: str | None = None
     full_name: str
     role: UserRole
 
@@ -17,8 +18,16 @@ class UserRead(BaseModel):
 class UserCreate(BaseModel):
     username: str
     email: EmailStr
+    phone_number: str | None = None
     full_name: str
     password: str
+    role: UserRole
+
+
+class UserUpdate(BaseModel):
+    email: EmailStr
+    phone_number: str | None = None
+    full_name: str
     role: UserRole
 
 

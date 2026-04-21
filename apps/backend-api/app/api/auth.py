@@ -8,6 +8,7 @@ from app.schemas.auth import LoginRequest, TokenResponse
 from app.schemas.user import SelfPasswordChangeRequest, SelfProfileUpdateRequest, UserRead
 from app.api.deps import get_current_user
 from app.services.auth_service import create_access_token, get_password_hash, verify_password
+from app.services.event_service import record_event
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -20,6 +21,15 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid username or password")
 
     access_token = create_access_token(user.username)
+    record_event(
+        db,
+        category="auth",
+        event_type="user_login",
+        severity="info",
+        actor_username=user.username,
+        message=f"{user.username} sisteme giriş yaptı",
+    )
+    db.commit()
     return TokenResponse(access_token=access_token, role=user.role, username=user.username)
 
 
@@ -51,5 +61,27 @@ def change_my_password(
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Current password is wrong")
 
     current_user.hashed_password = get_password_hash(payload.new_password)
+    record_event(
+        db,
+        category="auth",
+        event_type="password_changed",
+        severity="info",
+        actor_username=current_user.username,
+        message=f"{current_user.username} şifresini değiştirdi",
+    )
+    db.commit()
+    return None
+
+
+@router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
+def logout(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    record_event(
+        db,
+        category="auth",
+        event_type="user_logout",
+        severity="info",
+        actor_username=current_user.username,
+        message=f"{current_user.username} sistemden çıkış yaptı",
+    )
     db.commit()
     return None

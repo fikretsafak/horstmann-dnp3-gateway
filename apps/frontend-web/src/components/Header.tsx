@@ -9,8 +9,8 @@ type Props = {
   onSettings?: () => void;
   isEngineeringView?: boolean;
   onToggleEngineering?: () => void;
-  activePage: "home" | "alarms" | "events";
-  onChangePage: (page: "home" | "alarms" | "events") => void;
+  activePage: "home" | "alarms" | "events" | "engineering";
+  onChangePage: (page: "home" | "alarms" | "events" | "engineering") => void;
 };
 
 export function Header({
@@ -44,7 +44,7 @@ export function Header({
       .map((item) => item[0]?.toUpperCase())
       .join("") || "U";
   const roleLabel =
-    role === "installer" ? "Kurulumcu" : role === "engineer" ? "Muhendis" : role === "operator" ? "Operator" : "Kullanici";
+    role === "installer" ? "Kurulumcu" : role === "engineer" ? "Mühendis" : role === "operator" ? "Operatör" : "Kullanıcı";
 
   return (
     <header className="header">
@@ -57,7 +57,7 @@ export function Header({
           <img
             className="header-customer-logo"
             src="/customer-logo-light.png"
-            alt="Musteri Logosu"
+            alt="Müşteri Logosu"
             onError={(event) => {
               event.currentTarget.src = "/customer-logo-placeholder.svg";
             }}
@@ -82,14 +82,14 @@ export function Header({
             className={`engineering-btn ${isEngineeringView ? "active" : ""}`}
             onClick={() => onToggleEngineering?.()}
           >
-            Muhendislik
+            Mühendislik
           </button>
         ) : null}
 
         <div className="profile-menu" ref={menuRef}>
           <button className="profile-trigger" onClick={() => setMenuOpen((prev) => !prev)}>
             <div className="profile-text">
-              <strong>{fullName ?? "Kullanici"}</strong>
+              <strong>{fullName ?? "Kullanıcı"}</strong>
               <small>{roleLabel}</small>
             </div>
             <div className="profile-avatar">{initials}</div>
@@ -111,7 +111,7 @@ export function Header({
                   onLogout?.();
                 }}
               >
-                Cikis Yap
+                Çıkış Yap
               </button>
             </div>
           ) : null}

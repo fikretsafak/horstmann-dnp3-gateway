@@ -53,6 +53,41 @@ export type UserRead = {
   id: number;
   username: string;
   email: string;
+  phone_number?: string | null;
   full_name: string;
   role: UserRole;
+};
+
+export type AlarmEvent = {
+  id: number;
+  device_id: number;
+  level: string;
+  title: string;
+  description: string;
+  assigned_to?: string | null;
+  acknowledged?: boolean;
+  reset?: boolean;
+  acknowledged_at?: string | null;
+  reset_at?: string | null;
+  created_at: string;
+};
+
+export type AlarmComment = {
+  id: number;
+  alarm_event_id: number;
+  author_username: string;
+  comment: string;
+  created_at: string;
+};
+
+export type SystemEvent = {
+  id: number;
+  category: string;
+  event_type: string;
+  severity: string;
+  message: string;
+  actor_username?: string | null;
+  device_code?: string | null;
+  metadata_json?: string | null;
+  created_at: string;
 };

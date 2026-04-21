@@ -9,6 +9,30 @@ class AlarmEventRead(BaseModel):
     level: str
     title: str
     description: str
+    assigned_to: str | None = None
+    acknowledged: bool = False
+    reset: bool = False
+    acknowledged_at: datetime | None = None
+    reset_at: datetime | None = None
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class AlarmAssignRequest(BaseModel):
+    assigned_to: str | None = None
+
+
+class AlarmCommentCreate(BaseModel):
+    comment: str
+
+
+class AlarmCommentRead(BaseModel):
+    id: int
+    alarm_event_id: int
+    author_username: str
+    comment: str
     created_at: datetime
 
     class Config:

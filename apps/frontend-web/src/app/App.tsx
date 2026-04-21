@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import { Header } from "../components/Header";
 import { LoginForm } from "../features/auth/LoginForm";
 import { UserManagementPanel } from "../features/auth/UserManagementPanel";
+import { AlarmsPage } from "../features/alarms/AlarmsPage";
+import { EventsPage } from "../features/events/EventsPage";
 import { DeviceSidebar } from "../features/devices/DeviceSidebar";
 import { LiveValuesTab } from "../features/live-values/LiveValuesTab";
 import { DeviceMapTab } from "../features/map/DeviceMapTab";
@@ -10,19 +12,31 @@ import {
   clearSession,
   createUser,
   deleteUser,
+  fetchAlarmComments,
+  fetchAlarmEvents,
   fetchDevices,
+  fetchSystemEvents,
   fetchLiveValues,
   fetchMe,
   fetchUsers,
   loadSession,
   login,
+  logout,
+  resetUserPassword,
   saveSession,
+  addAlarmComment,
+  acknowledgeAlarm,
+  acknowledgeAllAlarms,
+  assignAlarm,
+  resetAlarm,
+  resetAllAlarms,
+  updateUser,
   updateMyProfile
 } from "../shared/api";
-import type { AuthSession, DeviceRow, LiveValue, UserRead } from "../shared/types";
+import type { AlarmComment, AlarmEvent, AuthSession, DeviceRow, LiveValue, SystemEvent, UserRead } from "../shared/types";
 
 type TabId = "map" | "values";
-type PageMode = "home" | "alarms" | "events";
+type PageMode = "home" | "alarms" | "events" | "engineering";
 type EngineeringPage = "overview" | "devices" | "users";
 
 export function App() {
@@ -30,6 +44,9 @@ export function App() {
   const [devices, setDevices] = useState<DeviceRow[]>([]);
   const [liveValues, setLiveValues] = useState<LiveValue[]>([]);
   const [users, setUsers] = useState<UserRead[]>([]);
+  const [alarms, setAlarms] = useState<AlarmEvent[]>([]);
+  const [events, setEvents] = useState<SystemEvent[]>([]);
+  const [alarmsLoading, setAlarmsLoading] = useState(false);
   const [currentUser, setCurrentUser] = useState<UserRead | null>(null);
   const [authError, setAuthError] = useState<string>();
   const [loadingLogin, setLoadingLogin] = useState(false);
@@ -66,6 +83,11 @@ export function App() {
         const deviceNameMap = new Map<number, string>(loadedDevices.map((item) => [item.id, item.name]));
         const telemetry = await fetchLiveValues(session.accessToken, deviceNameMap);
         setLiveValues(telemetry);
+        setAlarmsLoading(true);
+        const alarmRows = await fetchAlarmEvents(session.accessToken);
+        setAlarms(alarmRows);
+        const eventRows = await fetchSystemEvents(session.accessToken);
+        setEvents(eventRows);
         if (session.role === "engineer") {
           const allUsers = await fetchUsers(session.accessToken);
           setUsers(allUsers);
@@ -73,13 +95,22 @@ export function App() {
           setUsers([]);
         }
       } catch {
-        setAuthError("Oturum gecersiz veya API erisilemiyor.");
+        setAuthError("Oturum geçersiz veya API erişilemiyor.");
       } finally {
+        setAlarmsLoading(false);
         setLoadingData(false);
       }
     };
     void load();
   }, [session]);
+
+  useEffect(() => {
+    if (!session) return;
+    if (session.role !== "engineer" && pageMode === "engineering") {
+      setPageMode("home");
+      setEngineeringPage("overview");
+    }
+  }, [session, pageMode]);
 
   const handleLogin = async (username: string, password: string) => {
     setLoadingLogin(true);
@@ -88,21 +119,29 @@ export function App() {
       const nextSession = await login(username, password);
       saveSession(nextSession);
       setSession(nextSession);
+      setPageMode("home");
+      setEngineeringPage("overview");
     } catch (error) {
-      setAuthError(error instanceof Error ? error.message : "Giris basarisiz.");
+      setAuthError(error instanceof Error ? error.message : "Giriş başarısız.");
     } finally {
       setLoadingLogin(false);
     }
   };
 
   const handleLogout = () => {
+    if (session) {
+      void logout(session.accessToken);
+    }
     clearSession();
     setSession(null);
     setCurrentUser(null);
     setDevices([]);
     setLiveValues([]);
     setUsers([]);
+    setAlarms([]);
+    setEvents([]);
     setEngineeringPage("overview");
+    setPageMode("home");
   };
 
   const reloadUsers = async () => {
@@ -114,6 +153,7 @@ export function App() {
   const handleCreateUser = async (payload: {
     username: string;
     email: string;
+    phone_number?: string | null;
     full_name: string;
     password: string;
     role: "operator" | "engineer";
@@ -127,6 +167,60 @@ export function App() {
     if (!session) return;
     await deleteUser(session.accessToken, userId);
     await reloadUsers();
+  };
+
+  const handleUpdateUser = async (
+    userId: number,
+    payload: { email: string; phone_number?: string | null; full_name: string; role: "operator" | "engineer" }
+  ) => {
+    if (!session) return;
+    await updateUser(session.accessToken, userId, payload);
+    await reloadUsers();
+  };
+
+  const handleResetUserPassword = async (userId: number, newPassword: string) => {
+    if (!session) return;
+    await resetUserPassword(session.accessToken, userId, newPassword);
+  };
+
+  const handleAssignAlarm = async (alarmId: number, assignedTo: string | null) => {
+    if (!session) return;
+    const updated = await assignAlarm(session.accessToken, alarmId, assignedTo);
+    setAlarms((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+  };
+
+  const handleLoadAlarmComments = async (alarmId: number): Promise<AlarmComment[]> => {
+    if (!session) return [];
+    return fetchAlarmComments(session.accessToken, alarmId);
+  };
+
+  const handleAddAlarmComment = async (alarmId: number, comment: string) => {
+    if (!session) return;
+    await addAlarmComment(session.accessToken, alarmId, comment);
+  };
+
+  const handleAcknowledgeAlarm = async (alarmId: number) => {
+    if (!session) return;
+    const updated = await acknowledgeAlarm(session.accessToken, alarmId);
+    setAlarms((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+  };
+
+  const handleResetAlarm = async (alarmId: number) => {
+    if (!session) return;
+    const updated = await resetAlarm(session.accessToken, alarmId);
+    setAlarms((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+  };
+
+  const handleAcknowledgeAllAlarms = async () => {
+    if (!session) return;
+    const updated = await acknowledgeAllAlarms(session.accessToken);
+    setAlarms(updated);
+  };
+
+  const handleResetAllAlarms = async () => {
+    if (!session) return;
+    const updated = await resetAllAlarms(session.accessToken);
+    setAlarms(updated);
   };
 
   const handleOpenSettings = () => {
@@ -193,7 +287,7 @@ export function App() {
                 className={engineeringPage === "overview" ? "active" : ""}
                 onClick={() => setEngineeringPage("overview")}
               >
-                Ozet
+                Özet
               </button>
               <button
                 className={engineeringPage === "devices" ? "active" : ""}
@@ -205,39 +299,50 @@ export function App() {
                 className={engineeringPage === "users" ? "active" : ""}
                 onClick={() => setEngineeringPage("users")}
               >
-                Kullanicilar
+                Kullanıcılar
               </button>
             </div>
 
             {engineeringPage === "overview" ? (
               <section className="tab-panel">
-                <h3>Muhendislik Paneli</h3>
-                <p>Bu alandan cihaz, kullanici ve sistem yonetimi alt sayfalarina gecis yapabilirsiniz.</p>
+                <h3>Mühendislik Paneli</h3>
+                <p>Bu alandan cihaz, kullanıcı ve sistem yönetimi alt sayfalarına geçiş yapabilirsiniz.</p>
               </section>
             ) : null}
             {engineeringPage === "devices" ? (
               <section className="tab-panel">
-                <h3>Cihaz Yonetimi</h3>
-                <p>Cihaz ekle/duzenle/sil islemleri bu alt sayfaya tasinacak.</p>
+                <h3>Cihaz Yönetimi</h3>
+                <p>Cihaz ekle/düzenle/sil işlemleri bu alt sayfaya taşınacak.</p>
               </section>
             ) : null}
             {engineeringPage === "users" && session.role !== "operator" ? (
-              <UserManagementPanel users={users} onCreate={handleCreateUser} onDelete={handleDeleteUser} />
+              <UserManagementPanel
+                users={users}
+                onCreate={handleCreateUser}
+                onDelete={handleDeleteUser}
+                onUpdate={handleUpdateUser}
+                onResetPassword={handleResetUserPassword}
+              />
             ) : null}
           </main>
         ) : pageMode !== "home" ? (
           <main className="content">
             {pageMode === "alarms" ? (
-              <section className="tab-panel">
-                <h3>Alarmlar</h3>
-                <p>Alarm listesi ve alarm gecmisi bu sayfada gosterilecek.</p>
-              </section>
+              <AlarmsPage
+                alarms={alarms}
+                users={users}
+                loading={alarmsLoading}
+                onAssign={handleAssignAlarm}
+                onLoadComments={handleLoadAlarmComments}
+                onAddComment={handleAddAlarmComment}
+                onAcknowledge={handleAcknowledgeAlarm}
+                onReset={handleResetAlarm}
+                onAcknowledgeAll={handleAcknowledgeAllAlarms}
+                onResetAll={handleResetAllAlarms}
+              />
             ) : null}
             {pageMode === "events" ? (
-              <section className="tab-panel">
-                <h3>Olaylar</h3>
-                <p>Olay kayitlari ve event gecmisi bu sayfada gosterilecek.</p>
-              </section>
+              <EventsPage events={events} loading={loadingData} />
             ) : null}
           </main>
         ) : (
@@ -251,10 +356,10 @@ export function App() {
                 <button className={activeTab === "values" ? "active" : ""} onClick={() => setActiveTab("values")}>
                   Tablo
                 </button>
-                {selectedDevice ? <span className="selected-device">Selected: {selectedDevice.name}</span> : null}
+                {selectedDevice ? <span className="selected-device">Seçili: {selectedDevice.name}</span> : null}
               </div>
 
-              {loadingData ? <p>Yukleniyor...</p> : null}
+              {loadingData ? <p>Yükleniyor...</p> : null}
               {activeTab === "map" ? (
                 <DeviceMapTab
                   devices={devices}
@@ -271,9 +376,9 @@ export function App() {
       {settingsOpen ? (
         <div className="settings-modal-backdrop">
           <div className="settings-modal">
-            <h3>Profil Ayarlari</h3>
+            <h3>Profil Ayarları</h3>
             <label>
-              Isim Soyisim
+              İsim Soyisim
               <input value={settingsFullName} onChange={(event) => setSettingsFullName(event.target.value)} />
             </label>
             <label>
@@ -281,7 +386,7 @@ export function App() {
               <input value={settingsEmail} onChange={(event) => setSettingsEmail(event.target.value)} />
             </label>
             <label>
-              Mevcut Sifre (opsiyonel)
+              Mevcut Şifre (opsiyonel)
               <input
                 type="password"
                 value={settingsCurrentPassword}
@@ -289,7 +394,7 @@ export function App() {
               />
             </label>
             <label>
-              Yeni Sifre (opsiyonel)
+              Yeni Şifre (opsiyonel)
               <input
                 type="password"
                 value={settingsNewPassword}
@@ -298,7 +403,7 @@ export function App() {
             </label>
             {settingsError ? <p className="error-text">{settingsError}</p> : null}
             <div className="settings-actions">
-              <button onClick={() => setSettingsOpen(false)}>Vazgec</button>
+              <button onClick={() => setSettingsOpen(false)}>Vazgeç</button>
               <button onClick={handleSaveSettings} disabled={settingsSaving}>
                 {settingsSaving ? "Kaydediliyor..." : "Kaydet"}
               </button>
