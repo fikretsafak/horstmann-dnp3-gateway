@@ -2,7 +2,16 @@ export type CommunicationStatus = "online" | "offline" | "unknown";
 
 export type DeviceRow = {
   id: number;
+  code: string;
   name: string;
+  description?: string;
+  gatewayCode?: string;
+  ipAddress?: string;
+  dnp3Address?: number;
+  pollIntervalSec?: number;
+  timeoutMs?: number;
+  retryCount?: number;
+  signalProfile?: string;
   communicationStatus: CommunicationStatus;
   batteryPercent: number;
   alarmActive: boolean;
@@ -31,7 +40,14 @@ export type ApiDevice = {
   id: number;
   code: string;
   name: string;
+  description?: string | null;
+  gateway_code?: string | null;
   ip_address: string;
+  dnp3_address: number;
+  poll_interval_sec: number;
+  timeout_ms: number;
+  retry_count: number;
+  signal_profile: string;
   latitude: number;
   longitude: number;
   battery_percent: number;
@@ -90,4 +106,19 @@ export type SystemEvent = {
   device_code?: string | null;
   metadata_json?: string | null;
   created_at: string;
+};
+
+export type Gateway = {
+  id: number;
+  code: string;
+  name: string;
+  host: string;
+  listen_port: number;
+  upstream_url: string;
+  batch_interval_sec: number;
+  max_devices: number;
+  device_code_prefix?: string | null;
+  token: string;
+  is_active: boolean;
+  last_seen_at?: string | null;
 };

@@ -3,6 +3,7 @@ import type { DeviceRow, LiveValue } from "./types";
 export const devices: DeviceRow[] = [
   {
     id: 1,
+    code: "SN2-001",
     name: "SN2-001",
     communicationStatus: "online",
     batteryPercent: 92,
@@ -13,6 +14,7 @@ export const devices: DeviceRow[] = [
   },
   {
     id: 2,
+    code: "SN2-002",
     name: "SN2-002",
     communicationStatus: "offline",
     batteryPercent: 44,

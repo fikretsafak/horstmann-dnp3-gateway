@@ -4,17 +4,23 @@ import { LoginForm } from "../features/auth/LoginForm";
 import { UserManagementPanel } from "../features/auth/UserManagementPanel";
 import { AlarmsPage } from "../features/alarms/AlarmsPage";
 import { EventsPage } from "../features/events/EventsPage";
+import { DeviceManagementPanel } from "../features/devices/DeviceManagementPanel";
 import { DeviceSidebar } from "../features/devices/DeviceSidebar";
 import { LiveValuesTab } from "../features/live-values/LiveValuesTab";
 import { DeviceMapTab } from "../features/map/DeviceMapTab";
 import {
   changeMyPassword,
   clearSession,
+  createGateway,
+  createDevice,
   createUser,
+  deleteDevice,
+  deleteGateway,
   deleteUser,
   fetchAlarmComments,
   fetchAlarmEvents,
   fetchDevices,
+  fetchGateways,
   fetchSystemEvents,
   fetchLiveValues,
   fetchMe,
@@ -30,14 +36,80 @@ import {
   assignAlarm,
   resetAlarm,
   resetAllAlarms,
+  updateGateway,
+  updateDevice,
   updateUser,
   updateMyProfile
 } from "../shared/api";
-import type { AlarmComment, AlarmEvent, AuthSession, DeviceRow, LiveValue, SystemEvent, UserRead } from "../shared/types";
+import type { AlarmComment, AlarmEvent, AuthSession, DeviceRow, Gateway, LiveValue, SystemEvent, UserRead } from "../shared/types";
 
 type TabId = "map" | "values";
 type PageMode = "home" | "alarms" | "events" | "engineering";
-type EngineeringPage = "overview" | "devices" | "users";
+type EngineeringPage = "devices" | "users";
+type NotificationSettings = {
+  smtp_host: string;
+  smtp_port: string;
+  smtp_username: string;
+  smtp_password: string;
+  smtp_from_email: string;
+  smtp_use_tls: boolean;
+  sms_provider: string;
+  sms_api_url: string;
+  sms_api_key: string;
+  sms_api_secret: string;
+  sms_sender: string;
+};
+
+const NOTIFICATION_SETTINGS_STORAGE_KEY = "hsl-notification-settings";
+
+function loadNotificationSettings(): NotificationSettings {
+  try {
+    const raw = localStorage.getItem(NOTIFICATION_SETTINGS_STORAGE_KEY);
+    if (!raw) {
+      return {
+        smtp_host: "",
+        smtp_port: "587",
+        smtp_username: "",
+        smtp_password: "",
+        smtp_from_email: "",
+        smtp_use_tls: true,
+        sms_provider: "",
+        sms_api_url: "",
+        sms_api_key: "",
+        sms_api_secret: "",
+        sms_sender: ""
+      };
+    }
+    const parsed = JSON.parse(raw) as Partial<NotificationSettings>;
+    return {
+      smtp_host: parsed.smtp_host ?? "",
+      smtp_port: parsed.smtp_port ?? "587",
+      smtp_username: parsed.smtp_username ?? "",
+      smtp_password: parsed.smtp_password ?? "",
+      smtp_from_email: parsed.smtp_from_email ?? "",
+      smtp_use_tls: parsed.smtp_use_tls ?? true,
+      sms_provider: parsed.sms_provider ?? "",
+      sms_api_url: parsed.sms_api_url ?? "",
+      sms_api_key: parsed.sms_api_key ?? "",
+      sms_api_secret: parsed.sms_api_secret ?? "",
+      sms_sender: parsed.sms_sender ?? ""
+    };
+  } catch {
+    return {
+      smtp_host: "",
+      smtp_port: "587",
+      smtp_username: "",
+      smtp_password: "",
+      smtp_from_email: "",
+      smtp_use_tls: true,
+      sms_provider: "",
+      sms_api_url: "",
+      sms_api_key: "",
+      sms_api_secret: "",
+      sms_sender: ""
+    };
+  }
+}
 
 export function App() {
   const [session, setSession] = useState<AuthSession | null>(() => loadSession());
@@ -46,6 +118,8 @@ export function App() {
   const [users, setUsers] = useState<UserRead[]>([]);
   const [alarms, setAlarms] = useState<AlarmEvent[]>([]);
   const [events, setEvents] = useState<SystemEvent[]>([]);
+  const [gateways, setGateways] = useState<Gateway[]>([]);
+  const [devicesByGateway, setDevicesByGateway] = useState<DeviceRow[]>([]);
   const [alarmsLoading, setAlarmsLoading] = useState(false);
   const [currentUser, setCurrentUser] = useState<UserRead | null>(null);
   const [authError, setAuthError] = useState<string>();
@@ -53,21 +127,16 @@ export function App() {
   const [loadingData, setLoadingData] = useState(false);
   const [selectedDeviceId, setSelectedDeviceId] = useState<number>(0);
   const [activeTab, setActiveTab] = useState<TabId>("map");
-  const [engineeringPage, setEngineeringPage] = useState<EngineeringPage>("overview");
+  const [engineeringPage, setEngineeringPage] = useState<EngineeringPage>("devices");
   const [pageMode, setPageMode] = useState<PageMode>("home");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsFullName, setSettingsFullName] = useState("");
   const [settingsEmail, setSettingsEmail] = useState("");
   const [settingsCurrentPassword, setSettingsCurrentPassword] = useState("");
   const [settingsNewPassword, setSettingsNewPassword] = useState("");
+  const [notificationSettings, setNotificationSettings] = useState<NotificationSettings>(loadNotificationSettings);
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsError, setSettingsError] = useState("");
-
-  useEffect(() => {
-    if (devices.length > 0 && selectedDeviceId === 0) {
-      setSelectedDeviceId(devices[0].id);
-    }
-  }, [devices, selectedDeviceId]);
 
   useEffect(() => {
     const load = async () => {
@@ -80,6 +149,7 @@ export function App() {
         setSettingsEmail(me.email);
         const loadedDevices = await fetchDevices(session.accessToken);
         setDevices(loadedDevices);
+        setDevicesByGateway(loadedDevices);
         const deviceNameMap = new Map<number, string>(loadedDevices.map((item) => [item.id, item.name]));
         const telemetry = await fetchLiveValues(session.accessToken, deviceNameMap);
         setLiveValues(telemetry);
@@ -89,9 +159,12 @@ export function App() {
         const eventRows = await fetchSystemEvents(session.accessToken);
         setEvents(eventRows);
         if (session.role === "engineer") {
+          const gatewayRows = await fetchGateways(session.accessToken);
+          setGateways(gatewayRows);
           const allUsers = await fetchUsers(session.accessToken);
           setUsers(allUsers);
         } else {
+          setGateways([]);
           setUsers([]);
         }
       } catch {
@@ -108,7 +181,7 @@ export function App() {
     if (!session) return;
     if (session.role !== "engineer" && pageMode === "engineering") {
       setPageMode("home");
-      setEngineeringPage("overview");
+      setEngineeringPage("devices");
     }
   }, [session, pageMode]);
 
@@ -120,7 +193,7 @@ export function App() {
       saveSession(nextSession);
       setSession(nextSession);
       setPageMode("home");
-      setEngineeringPage("overview");
+      setEngineeringPage("devices");
     } catch (error) {
       setAuthError(error instanceof Error ? error.message : "Giriş başarısız.");
     } finally {
@@ -140,7 +213,9 @@ export function App() {
     setUsers([]);
     setAlarms([]);
     setEvents([]);
-    setEngineeringPage("overview");
+    setGateways([]);
+    setDevicesByGateway([]);
+    setEngineeringPage("devices");
     setPageMode("home");
   };
 
@@ -223,6 +298,111 @@ export function App() {
     setAlarms(updated);
   };
 
+  const reloadGateways = async () => {
+    if (!session || session.role !== "engineer") return;
+    const rows = await fetchGateways(session.accessToken);
+    setGateways(rows);
+  };
+
+  const handleCreateGateway = async (payload: {
+    code: string;
+    name: string;
+    host: string;
+    listen_port: number;
+    upstream_url: string;
+    batch_interval_sec: number;
+    max_devices: number;
+    device_code_prefix?: string | null;
+    token: string;
+    is_active: boolean;
+  }) => {
+    if (!session) return;
+    await createGateway(session.accessToken, payload);
+    await reloadGateways();
+  };
+
+  const handleDeleteGateway = async (gatewayCode: string) => {
+    if (!session) return;
+    await deleteGateway(session.accessToken, gatewayCode);
+    await reloadGateways();
+  };
+
+  const handleUpdateGateway = async (
+    gatewayCode: string,
+    payload: { name?: string; host?: string; listen_port?: number; token?: string }
+  ) => {
+    if (!session) return;
+    await updateGateway(session.accessToken, gatewayCode, payload);
+    await reloadGateways();
+  };
+
+  const handleSelectGatewayForDevices = async (gatewayCode: string) => {
+    if (!session) return;
+    const scopedDevices = await fetchDevices(session.accessToken, gatewayCode);
+    setDevicesByGateway(scopedDevices);
+  };
+
+  const handleCreateDevice = async (payload: {
+    code: string;
+    name: string;
+    description?: string | null;
+    gateway_code?: string | null;
+    ip_address: string;
+    dnp3_address: number;
+    poll_interval_sec: number;
+    timeout_ms: number;
+    retry_count: number;
+    signal_profile: string;
+    latitude: number;
+    longitude: number;
+  }) => {
+    if (!session) return;
+    await createDevice(session.accessToken, payload);
+    const all = await fetchDevices(session.accessToken);
+    setDevices(all);
+    if (payload.gateway_code) {
+      const scoped = await fetchDevices(session.accessToken, payload.gateway_code);
+      setDevicesByGateway(scoped);
+    } else {
+      setDevicesByGateway(all);
+    }
+  };
+
+  const handleUpdateDevice = async (
+    deviceCode: string,
+    payload: {
+      name?: string;
+      description?: string | null;
+      gateway_code?: string | null;
+      ip_address?: string;
+      dnp3_address?: number;
+      poll_interval_sec?: number;
+      timeout_ms?: number;
+      retry_count?: number;
+      latitude?: number;
+      longitude?: number;
+    }
+  ) => {
+    if (!session) return;
+    await updateDevice(session.accessToken, deviceCode, payload);
+    const all = await fetchDevices(session.accessToken);
+    setDevices(all);
+    if (payload.gateway_code) {
+      const scoped = await fetchDevices(session.accessToken, payload.gateway_code);
+      setDevicesByGateway(scoped);
+    } else {
+      setDevicesByGateway(all);
+    }
+  };
+
+  const handleDeleteDevice = async (deviceCode: string) => {
+    if (!session) return;
+    await deleteDevice(session.accessToken, deviceCode);
+    const all = await fetchDevices(session.accessToken);
+    setDevices(all);
+    setDevicesByGateway((prev) => prev.filter((item) => item.code !== deviceCode));
+  };
+
   const handleOpenSettings = () => {
     if (currentUser) {
       setSettingsFullName(currentUser.full_name);
@@ -231,6 +411,7 @@ export function App() {
     setSettingsCurrentPassword("");
     setSettingsNewPassword("");
     setSettingsError("");
+    setNotificationSettings(loadNotificationSettings());
     setSettingsOpen(true);
   };
 
@@ -250,6 +431,7 @@ export function App() {
           new_password: settingsNewPassword
         });
       }
+      localStorage.setItem(NOTIFICATION_SETTINGS_STORAGE_KEY, JSON.stringify(notificationSettings));
       setSettingsOpen(false);
     } catch (error) {
       setSettingsError(error instanceof Error ? error.message : "Ayarlar kaydedilemedi.");
@@ -284,12 +466,6 @@ export function App() {
           <main className="content engineering-content">
             <div className="tabs">
               <button
-                className={engineeringPage === "overview" ? "active" : ""}
-                onClick={() => setEngineeringPage("overview")}
-              >
-                Özet
-              </button>
-              <button
                 className={engineeringPage === "devices" ? "active" : ""}
                 onClick={() => setEngineeringPage("devices")}
               >
@@ -303,17 +479,18 @@ export function App() {
               </button>
             </div>
 
-            {engineeringPage === "overview" ? (
-              <section className="tab-panel">
-                <h3>Mühendislik Paneli</h3>
-                <p>Bu alandan cihaz, kullanıcı ve sistem yönetimi alt sayfalarına geçiş yapabilirsiniz.</p>
-              </section>
-            ) : null}
             {engineeringPage === "devices" ? (
-              <section className="tab-panel">
-                <h3>Cihaz Yönetimi</h3>
-                <p>Cihaz ekle/düzenle/sil işlemleri bu alt sayfaya taşınacak.</p>
-              </section>
+              <DeviceManagementPanel
+                gateways={gateways}
+                devices={devicesByGateway}
+                onSelectGateway={handleSelectGatewayForDevices}
+                onCreateGateway={handleCreateGateway}
+                onUpdateGateway={handleUpdateGateway}
+                onDeleteGateway={handleDeleteGateway}
+                onCreate={handleCreateDevice}
+                onUpdate={handleUpdateDevice}
+                onDelete={handleDeleteDevice}
+              />
             ) : null}
             {engineeringPage === "users" && session.role !== "operator" ? (
               <UserManagementPanel
@@ -356,7 +533,6 @@ export function App() {
                 <button className={activeTab === "values" ? "active" : ""} onClick={() => setActiveTab("values")}>
                   Tablo
                 </button>
-                {selectedDevice ? <span className="selected-device">Seçili: {selectedDevice.name}</span> : null}
               </div>
 
               {loadingData ? <p>Yükleniyor...</p> : null}
@@ -399,6 +575,118 @@ export function App() {
                 type="password"
                 value={settingsNewPassword}
                 onChange={(event) => setSettingsNewPassword(event.target.value)}
+              />
+            </label>
+            <h3>Bildirim Ayarları</h3>
+            <label>
+              SMTP Sunucu
+              <input
+                value={notificationSettings.smtp_host}
+                onChange={(event) =>
+                  setNotificationSettings((prev) => ({ ...prev, smtp_host: event.target.value }))
+                }
+                placeholder="smtp.ornek.com"
+              />
+            </label>
+            <label>
+              SMTP Port
+              <input
+                type="number"
+                min={1}
+                max={65535}
+                value={notificationSettings.smtp_port}
+                onChange={(event) =>
+                  setNotificationSettings((prev) => ({ ...prev, smtp_port: event.target.value }))
+                }
+              />
+            </label>
+            <label>
+              SMTP Kullanıcı Adı
+              <input
+                value={notificationSettings.smtp_username}
+                onChange={(event) =>
+                  setNotificationSettings((prev) => ({ ...prev, smtp_username: event.target.value }))
+                }
+              />
+            </label>
+            <label>
+              SMTP Şifre
+              <input
+                type="password"
+                value={notificationSettings.smtp_password}
+                onChange={(event) =>
+                  setNotificationSettings((prev) => ({ ...prev, smtp_password: event.target.value }))
+                }
+              />
+            </label>
+            <label>
+              Gönderen E-posta
+              <input
+                type="email"
+                value={notificationSettings.smtp_from_email}
+                onChange={(event) =>
+                  setNotificationSettings((prev) => ({ ...prev, smtp_from_email: event.target.value }))
+                }
+                placeholder="alarm@firma.com"
+              />
+            </label>
+            <label className="notify-option">
+              <input
+                type="checkbox"
+                checked={notificationSettings.smtp_use_tls}
+                onChange={(event) =>
+                  setNotificationSettings((prev) => ({ ...prev, smtp_use_tls: event.target.checked }))
+                }
+              />
+              TLS Kullan
+            </label>
+            <label>
+              SMS Sağlayıcı
+              <input
+                value={notificationSettings.sms_provider}
+                onChange={(event) =>
+                  setNotificationSettings((prev) => ({ ...prev, sms_provider: event.target.value }))
+                }
+                placeholder="Twilio / Netgsm / ..."
+              />
+            </label>
+            <label>
+              SMS API URL
+              <input
+                value={notificationSettings.sms_api_url}
+                onChange={(event) =>
+                  setNotificationSettings((prev) => ({ ...prev, sms_api_url: event.target.value }))
+                }
+                placeholder="https://..."
+              />
+            </label>
+            <label>
+              SMS API Key
+              <input
+                value={notificationSettings.sms_api_key}
+                onChange={(event) =>
+                  setNotificationSettings((prev) => ({ ...prev, sms_api_key: event.target.value }))
+                }
+              />
+            </label>
+            <label>
+              SMS API Secret
+              <input
+                type="password"
+                value={notificationSettings.sms_api_secret}
+                onChange={(event) =>
+                  setNotificationSettings((prev) => ({ ...prev, sms_api_secret: event.target.value }))
+                }
+              />
+            </label>
+            <label>
+              SMS Gönderen Başlığı
+              <input
+                value={notificationSettings.sms_sender}
+                onChange={(event) =>
+                  setNotificationSettings((prev) => ({ ...prev, sms_sender: event.target.value }))
+                }
+                placeholder="FORMELKTRK"
               />
             </label>
             {settingsError ? <p className="error-text">{settingsError}</p> : null}

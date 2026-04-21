@@ -11,6 +11,8 @@ export function EventsPage({ events, loading }: Props) {
   const [search, setSearch] = useState("");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [severityFilter, setSeverityFilter] = useState("all");
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [exportFormat, setExportFormat] = useState<"csv" | "json">("csv");
 
   const categories = useMemo(() => Array.from(new Set(events.map((item) => item.category))).sort(), [events]);
 
@@ -24,10 +26,50 @@ export function EventsPage({ events, loading }: Props) {
     });
   }, [events, categoryFilter, severityFilter, search]);
 
+  const exportRows = filteredEvents.map((item) => ({
+    oncelik: item.severity,
+    kategori: item.category,
+    mesaj: item.message,
+    kullanici: item.actor_username ?? "-",
+    cihaz: item.device_code ?? "-",
+    tarih: new Date(item.created_at).toLocaleString("tr-TR")
+  }));
+
+  const handleExport = () => {
+    const now = new Date().toISOString().replace(/[:.]/g, "-");
+    if (exportFormat === "json") {
+      const blob = new Blob([JSON.stringify(exportRows, null, 2)], { type: "application/json;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `olaylar-${now}.json`;
+      anchor.click();
+      URL.revokeObjectURL(url);
+      setShowExportModal(false);
+      return;
+    }
+
+    const headers = ["Öncelik", "Kategori", "Mesaj", "Kullanıcı", "Cihaz", "Tarih"];
+    const rows = exportRows.map((item) =>
+      [item.oncelik, item.kategori, item.mesaj, item.kullanici, item.cihaz, item.tarih]
+        .map((cell) => `"${String(cell).replace(/"/g, '""')}"`)
+        .join(",")
+    );
+    const csv = [headers.join(","), ...rows].join("\n");
+    const blob = new Blob([`\uFEFF${csv}`], { type: "text/csv;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = `olaylar-${now}.csv`;
+    anchor.click();
+    URL.revokeObjectURL(url);
+    setShowExportModal(false);
+  };
+
   return (
-    <section className="alarms-layout">
-      <div className="alarms-list-card">
-        <div className="alarms-toolbar">
+    <section className="alarms-layout events-layout">
+      <div className="alarms-list-card events-list-card">
+        <div className="alarms-toolbar events-toolbar">
           <input
             className="device-search-input"
             placeholder="Olay ara..."
@@ -49,11 +91,14 @@ export function EventsPage({ events, loading }: Props) {
               <option value="warning">Uyarı</option>
               <option value="error">Hata</option>
             </select>
+            <button className="secondary-btn action-btn" type="button" onClick={() => setShowExportModal(true)}>
+              Export
+            </button>
           </div>
         </div>
 
-        <div className="alarms-table-wrap">
-          <table className="values-table">
+        <div className="alarms-table-wrap events-table-wrap">
+          <table className="values-table events-table">
             <thead>
               <tr>
                 <th>Öncelik</th>
@@ -84,6 +129,29 @@ export function EventsPage({ events, loading }: Props) {
         </div>
         {!loading && filteredEvents.length === 0 ? <p className="helper-text">Filtreye uygun olay bulunamadı.</p> : null}
       </div>
+      {showExportModal ? (
+        <div className="settings-modal-backdrop">
+          <div className="settings-modal export-modal">
+            <h3>Olayları Dışa Aktar</h3>
+            <p className="helper-text">Filtrelenmiş olaylar seçtiğiniz formatta indirilecektir.</p>
+            <label>
+              Format
+              <select value={exportFormat} onChange={(event) => setExportFormat(event.target.value as "csv" | "json")}>
+                <option value="csv">CSV</option>
+                <option value="json">JSON</option>
+              </select>
+            </label>
+            <div className="modal-actions">
+              <button type="button" className="secondary-btn" onClick={() => setShowExportModal(false)}>
+                İptal
+              </button>
+              <button type="button" className="primary-btn" onClick={handleExport}>
+                İndir
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </section>
   );
 }

@@ -5,6 +5,7 @@ import type {
   ApiTelemetry,
   AuthSession,
   DeviceRow,
+  Gateway,
   LiveValue,
   SystemEvent,
   UserRead,
@@ -107,15 +108,25 @@ export async function login(username: string, password: string): Promise<AuthSes
   };
 }
 
-export async function fetchDevices(token: string): Promise<DeviceRow[]> {
-  const response = await fetch(`${API_BASE_URL}/devices`, {
+export async function fetchDevices(token: string, gatewayCode?: string): Promise<DeviceRow[]> {
+  const endpoint = gatewayCode ? `${API_BASE_URL}/devices?gateway_code=${encodeURIComponent(gatewayCode)}` : `${API_BASE_URL}/devices`;
+  const response = await fetch(endpoint, {
     headers: authHeaders(token)
   });
   if (!response.ok) throw new Error("Cihaz listesi alınamadı.");
   const devices = (await response.json()) as ApiDevice[];
   return devices.map((item) => ({
     id: item.id,
+    code: item.code,
     name: item.name,
+    description: item.description ?? undefined,
+    gatewayCode: item.gateway_code ?? undefined,
+    ipAddress: item.ip_address,
+    dnp3Address: item.dnp3_address,
+    pollIntervalSec: item.poll_interval_sec,
+    timeoutMs: item.timeout_ms,
+    retryCount: item.retry_count,
+    signalProfile: item.signal_profile,
     communicationStatus: item.communication_status,
     batteryPercent: item.battery_percent,
     alarmActive: item.alarm_active,
@@ -123,6 +134,63 @@ export async function fetchDevices(token: string): Promise<DeviceRow[]> {
     latitude: item.latitude,
     longitude: item.longitude
   }));
+}
+
+export async function createDevice(
+  token: string,
+  payload: {
+    code: string;
+    name: string;
+    description?: string | null;
+    gateway_code?: string | null;
+    ip_address: string;
+    dnp3_address: number;
+    poll_interval_sec: number;
+    timeout_ms: number;
+    retry_count: number;
+    signal_profile: string;
+    latitude: number;
+    longitude: number;
+  }
+): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/devices`, {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) throw await buildApiError(response, "Cihaz oluşturulamadı.");
+}
+
+export async function updateDevice(
+  token: string,
+  deviceCode: string,
+  payload: {
+    name?: string;
+    description?: string | null;
+    gateway_code?: string | null;
+    ip_address?: string;
+    dnp3_address?: number;
+    poll_interval_sec?: number;
+    timeout_ms?: number;
+    retry_count?: number;
+    latitude?: number;
+    longitude?: number;
+  }
+): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/devices/${deviceCode}`, {
+    method: "PATCH",
+    headers: authHeaders(token),
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) throw await buildApiError(response, "Cihaz güncellenemedi.");
+}
+
+export async function deleteDevice(token: string, deviceCode: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/devices/${deviceCode}`, {
+    method: "DELETE",
+    headers: authHeaders(token)
+  });
+  if (!response.ok) throw await buildApiError(response, "Cihaz silinemedi.");
 }
 
 export async function fetchLiveValues(token: string, deviceNames: Map<number, string>): Promise<LiveValue[]> {
@@ -308,4 +376,66 @@ export async function fetchSystemEvents(token: string): Promise<SystemEvent[]> {
   });
   if (!response.ok) throw await buildApiError(response, "Sistem olayları alınamadı.");
   return (await response.json()) as SystemEvent[];
+}
+
+export async function fetchGateways(token: string): Promise<Gateway[]> {
+  const response = await fetch(`${API_BASE_URL}/gateways`, {
+    headers: authHeaders(token)
+  });
+  if (!response.ok) throw await buildApiError(response, "Gateway listesi alınamadı.");
+  return (await response.json()) as Gateway[];
+}
+
+export async function createGateway(
+  token: string,
+  payload: {
+    code: string;
+    name: string;
+    host: string;
+    listen_port: number;
+    upstream_url: string;
+    batch_interval_sec: number;
+    max_devices: number;
+    device_code_prefix?: string | null;
+    token: string;
+    is_active: boolean;
+  }
+): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/gateways`, {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) throw await buildApiError(response, "Gateway oluşturulamadı.");
+}
+
+export async function updateGateway(
+  token: string,
+  gatewayCode: string,
+  payload: {
+    name?: string;
+    host?: string;
+    listen_port?: number;
+    upstream_url?: string;
+    batch_interval_sec?: number;
+    max_devices?: number;
+    device_code_prefix?: string | null;
+    token?: string;
+    is_active?: boolean;
+  }
+): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/gateways/${gatewayCode}`, {
+    method: "PATCH",
+    headers: authHeaders(token),
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) throw await buildApiError(response, "Gateway güncellenemedi.");
+}
+
+export async function deleteGateway(token: string, gatewayCode: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/gateways/${gatewayCode}`, {
+    method: "DELETE",
+    headers: authHeaders(token)
+  });
+  if (!response.ok) throw await buildApiError(response, "Gateway silinemedi.");
 }

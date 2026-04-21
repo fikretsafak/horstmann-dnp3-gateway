@@ -13,6 +13,10 @@ class DeviceRepository:
         stmt = select(Device).order_by(Device.name.asc())
         return list(self.db.scalars(stmt).all())
 
+    def list_devices_by_gateway(self, gateway_code: str) -> list[Device]:
+        stmt = select(Device).where(Device.gateway_code == gateway_code).order_by(Device.name.asc())
+        return list(self.db.scalars(stmt).all())
+
     def get_by_code(self, code: str) -> Device | None:
         stmt = select(Device).where(Device.code == code)
         return self.db.scalar(stmt)
@@ -30,3 +34,7 @@ class DeviceRepository:
         self.db.commit()
         self.db.refresh(device)
         return device
+
+    def delete(self, device: Device) -> None:
+        self.db.delete(device)
+        self.db.commit()

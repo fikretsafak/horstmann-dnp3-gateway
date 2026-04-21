@@ -222,8 +222,8 @@ export function AlarmsPage({
 
   return (
     <section className="alarms-layout">
-      <div className="alarms-list-card">
-        <div className="alarms-toolbar">
+      <div className="alarms-list-card alarms-page-list-card">
+        <div className="alarms-toolbar alarms-page-toolbar">
           <input
             className="device-search-input"
             placeholder="Alarm ara..."
@@ -258,8 +258,8 @@ export function AlarmsPage({
             </button>
           </div>
         </div>
-        <div className="alarms-table-wrap">
-          <table className="values-table">
+        <div className="alarms-table-wrap alarms-page-table-wrap">
+          <table className="values-table alarms-page-table">
             <thead>
               <tr>
                 <th>Seviye</th>

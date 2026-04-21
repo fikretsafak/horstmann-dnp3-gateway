@@ -36,6 +36,7 @@ export function UserManagementPanel({ users, onCreate, onDelete, onUpdate, onRes
   const [fullName, setFullName] = useState("");
   const [phoneNumber, setPhoneNumber] = useState("");
   const [password, setPassword] = useState("");
+  const [editUsername, setEditUsername] = useState("");
   const [resetPassword, setResetPassword] = useState("");
   const [resetPasswordConfirm, setResetPasswordConfirm] = useState("");
   const [role, setRole] = useState<"operator" | "engineer">("operator");
@@ -106,6 +107,7 @@ export function UserManagementPanel({ users, onCreate, onDelete, onUpdate, onRes
 
   const startEdit = (user: UserRead) => {
     setEditingUserId(user.id);
+    setEditUsername(user.username);
     setEmail(user.email);
     setFullName(user.full_name);
     setPhoneNumber(user.phone_number ?? "");
@@ -138,6 +140,7 @@ export function UserManagementPanel({ users, onCreate, onDelete, onUpdate, onRes
         return next;
       });
       setEditingUserId(null);
+      setEditUsername("");
       setEmail("");
       setFullName("");
       setPhoneNumber("");
@@ -269,6 +272,10 @@ export function UserManagementPanel({ users, onCreate, onDelete, onUpdate, onRes
           <form className="settings-modal" onSubmit={handleEditSubmit}>
             <h3>Kullanıcı Düzenle</h3>
             <label>
+              Kullanıcı Adı
+              <input value={editUsername} disabled readOnly />
+            </label>
+            <label>
               E-posta
               <input value={email} onChange={(event) => setEmail(event.target.value)} required />
             </label>
@@ -348,10 +355,11 @@ export function UserManagementPanel({ users, onCreate, onDelete, onUpdate, onRes
         </div>
       ) : null}
 
-      <table className="values-table">
+      <table className="values-table user-table">
         <thead>
           <tr>
             <th>Kullanıcı</th>
+            <th>Kullanıcı Adı</th>
             <th>Rol</th>
             <th>E-posta</th>
             <th>Telefon</th>
@@ -364,11 +372,28 @@ export function UserManagementPanel({ users, onCreate, onDelete, onUpdate, onRes
           {users.map((user) => (
             <tr key={user.id}>
               <td>{user.full_name}</td>
+              <td>{user.username}</td>
               <td>{getRoleLabel(user.role)}</td>
               <td>{user.email}</td>
               <td>{user.phone_number ?? "-"}</td>
-              <td>{notificationPrefs[user.id]?.email ? "Açık" : "Kapalı"}</td>
-              <td>{notificationPrefs[user.id]?.sms ? "Açık" : "Kapalı"}</td>
+              <td className="notify-cell">
+                <span
+                  className={`status-toggle ${notificationPrefs[user.id]?.email ? "on" : "off"}`}
+                  title={notificationPrefs[user.id]?.email ? "Açık" : "Kapalı"}
+                  aria-label={`E-posta bildirimi ${notificationPrefs[user.id]?.email ? "açık" : "kapalı"}`}
+                >
+                  {notificationPrefs[user.id]?.email ? "⏽" : "⭘"}
+                </span>
+              </td>
+              <td className="notify-cell">
+                <span
+                  className={`status-toggle ${notificationPrefs[user.id]?.sms ? "on" : "off"}`}
+                  title={notificationPrefs[user.id]?.sms ? "Açık" : "Kapalı"}
+                  aria-label={`SMS bildirimi ${notificationPrefs[user.id]?.sms ? "açık" : "kapalı"}`}
+                >
+                  {notificationPrefs[user.id]?.sms ? "⏽" : "⭘"}
+                </span>
+              </td>
               <td className="actions-cell">
                 <button className="edit-btn action-btn" onClick={() => startEdit(user)}>
                   Düzenle

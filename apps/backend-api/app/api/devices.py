@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user, require_role
@@ -13,10 +13,13 @@ router = APIRouter(prefix="/devices", tags=["devices"])
 
 @router.get("", response_model=list[DeviceRead])
 def list_devices(
+    gateway_code: str | None = Query(default=None),
     _: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     repository = DeviceRepository(db)
+    if gateway_code:
+        return repository.list_devices_by_gateway(gateway_code)
     return repository.list_devices()
 
 
@@ -45,3 +48,17 @@ def update_device(
     if device is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Device not found")
     return repository.update(device, payload)
+
+
+@router.delete("/{device_code}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_device(
+    device_code: str,
+    _: User = Depends(require_role(UserRole.ENGINEER)),
+    db: Session = Depends(get_db),
+):
+    repository = DeviceRepository(db)
+    device = repository.get_by_code(device_code)
+    if device is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Device not found")
+    repository.delete(device)
+    return None

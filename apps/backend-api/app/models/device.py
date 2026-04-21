@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from sqlalchemy import DateTime, Enum, Float, String
+from sqlalchemy import DateTime, Enum, Float, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -13,7 +13,14 @@ class Device(Base):
     id: Mapped[int] = mapped_column(primary_key=True, index=True)
     code: Mapped[str] = mapped_column(String(50), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    gateway_code: Mapped[str | None] = mapped_column(String(50), nullable=True, index=True)
     ip_address: Mapped[str] = mapped_column(String(120))
+    dnp3_address: Mapped[int] = mapped_column(Integer, default=1)
+    poll_interval_sec: Mapped[int] = mapped_column(Integer, default=5)
+    timeout_ms: Mapped[int] = mapped_column(Integer, default=3000)
+    retry_count: Mapped[int] = mapped_column(Integer, default=2)
+    signal_profile: Mapped[str] = mapped_column(String(80), default="horstmann_sn2_fixed")
     latitude: Mapped[float] = mapped_column(Float)
     longitude: Mapped[float] = mapped_column(Float)
     battery_percent: Mapped[float] = mapped_column(Float, default=100.0)

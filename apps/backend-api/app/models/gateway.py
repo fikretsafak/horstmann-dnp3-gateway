@@ -1,0 +1,23 @@
+from datetime import datetime
+
+from sqlalchemy import Boolean, DateTime, Integer, String
+from sqlalchemy.orm import Mapped, mapped_column
+
+from app.db.base import Base
+
+
+class Gateway(Base):
+    __tablename__ = "gateways"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    code: Mapped[str] = mapped_column(String(50), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(255))
+    host: Mapped[str] = mapped_column(String(120))
+    listen_port: Mapped[int] = mapped_column(Integer)
+    upstream_url: Mapped[str] = mapped_column(String(500), default="https://central.example.com/api/v1/telemetry/gateway")
+    batch_interval_sec: Mapped[int] = mapped_column(Integer, default=5)
+    max_devices: Mapped[int] = mapped_column(Integer, default=200)
+    device_code_prefix: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    token: Mapped[str] = mapped_column(String(255), index=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
