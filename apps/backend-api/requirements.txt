@@ -8,3 +8,5 @@ pydantic-settings
 python-multipart
 email-validator
 bcrypt<5
+pika
+paho-mqtt

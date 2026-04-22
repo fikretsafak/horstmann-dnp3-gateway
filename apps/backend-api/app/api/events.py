@@ -1,12 +1,11 @@
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
 from app.db.session import get_db
-from app.models.system_event import SystemEvent
 from app.models.user import User
 from app.schemas.event import SystemEventRead
+from app.services.system_event_service import list_system_events
 
 router = APIRouter(prefix="/events", tags=["events"])
 
@@ -19,11 +18,4 @@ def list_events(
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    stmt = select(SystemEvent).order_by(SystemEvent.created_at.desc()).limit(1000)
-    if category:
-        stmt = stmt.where(SystemEvent.category == category)
-    if severity:
-        stmt = stmt.where(SystemEvent.severity == severity)
-    if actor_username:
-        stmt = stmt.where(SystemEvent.actor_username == actor_username)
-    return list(db.scalars(stmt).all())
+    return list_system_events(db, category=category, severity=severity, actor_username=actor_username)

@@ -1,0 +1,111 @@
+{
+  "services": [
+    {
+      "name": "PostgreSQL",
+      "type": "windows_service",
+      "windows_service_name": "postgresql-x64-16",
+      "health_host": "127.0.0.1",
+      "health_port": 5432
+    },
+    {
+      "name": "RabbitMQ",
+      "type": "windows_service",
+      "windows_service_name": "RabbitMQ",
+      "health_host": "127.0.0.1",
+      "health_port": 5672
+    },
+    {
+      "name": "Backend API",
+      "type": "process",
+      "working_dir": "C:/Users/fikret.safak/OneDrive - Form Elektrik Ins.Muh.A.S/Belgeler/SoftwareFormElektrik/Horstman Smart Logger/apps/backend-api",
+      "command": [
+        "py",
+        "-3.10",
+        "-m",
+        "uvicorn",
+        "app.main:app",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "8000"
+      ],
+      "env": {
+        "EVENT_BUS_BACKEND": "rabbitmq",
+        "SERVICE_ROLE": "api"
+      },
+      "health_host": "127.0.0.1",
+      "health_port": 8000
+    },
+    {
+      "name": "Tag Engine Worker",
+      "type": "process",
+      "working_dir": "C:/Users/fikret.safak/OneDrive - Form Elektrik Ins.Muh.A.S/Belgeler/SoftwareFormElektrik/Horstman Smart Logger/apps/backend-api",
+      "command": [
+        "py",
+        "-3.10",
+        "-m",
+        "app.workers.run_worker"
+      ],
+      "env": {
+        "EVENT_BUS_BACKEND": "rabbitmq",
+        "SERVICE_ROLE": "tag",
+        "WORKER_HEALTH_PORT": "8011"
+      },
+      "health_host": "127.0.0.1",
+      "health_port": 8011
+    },
+    {
+      "name": "Alarm Worker",
+      "type": "process",
+      "working_dir": "C:/Users/fikret.safak/OneDrive - Form Elektrik Ins.Muh.A.S/Belgeler/SoftwareFormElektrik/Horstman Smart Logger/apps/backend-api",
+      "command": [
+        "py",
+        "-3.10",
+        "-m",
+        "app.workers.run_worker"
+      ],
+      "env": {
+        "EVENT_BUS_BACKEND": "rabbitmq",
+        "SERVICE_ROLE": "alarm",
+        "WORKER_HEALTH_PORT": "8012"
+      },
+      "health_host": "127.0.0.1",
+      "health_port": 8012
+    },
+    {
+      "name": "Outbound Worker",
+      "type": "process",
+      "working_dir": "C:/Users/fikret.safak/OneDrive - Form Elektrik Ins.Muh.A.S/Belgeler/SoftwareFormElektrik/Horstman Smart Logger/apps/backend-api",
+      "command": [
+        "py",
+        "-3.10",
+        "-m",
+        "app.workers.run_worker"
+      ],
+      "env": {
+        "EVENT_BUS_BACKEND": "rabbitmq",
+        "SERVICE_ROLE": "outbound",
+        "WORKER_HEALTH_PORT": "8013"
+      },
+      "health_host": "127.0.0.1",
+      "health_port": 8013
+    },
+    {
+      "name": "Frontend Web",
+      "type": "process",
+      "working_dir": "C:/Users/fikret.safak/OneDrive - Form Elektrik Ins.Muh.A.S/Belgeler/SoftwareFormElektrik/Horstman Smart Logger/apps/frontend-web",
+      "command": [
+        "npm",
+        "run",
+        "dev",
+        "--",
+        "--host",
+        "127.0.0.1",
+        "--port",
+        "5173"
+      ],
+      "health_host": "127.0.0.1",
+      "health_port": 5173
+    }
+  ]
+}

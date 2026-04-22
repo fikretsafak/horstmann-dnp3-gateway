@@ -7,6 +7,8 @@ import type {
   DeviceRow,
   Gateway,
   LiveValue,
+  NotificationSettings,
+  OutboundTarget,
   SystemEvent,
   UserRead,
   UserRole
@@ -438,4 +440,86 @@ export async function deleteGateway(token: string, gatewayCode: string): Promise
     headers: authHeaders(token)
   });
   if (!response.ok) throw await buildApiError(response, "Gateway silinemedi.");
+}
+
+export async function fetchOutboundTargets(token: string): Promise<OutboundTarget[]> {
+  const response = await fetch(`${API_BASE_URL}/outbound-targets`, {
+    headers: authHeaders(token)
+  });
+  if (!response.ok) throw await buildApiError(response, "Outbound hedefleri alınamadı.");
+  return (await response.json()) as OutboundTarget[];
+}
+
+export async function createOutboundTarget(
+  token: string,
+  payload: {
+    name: string;
+    protocol: "rest" | "mqtt";
+    endpoint: string;
+    topic?: string | null;
+    event_filter: "all" | "telemetry" | "alarm";
+    auth_header?: string | null;
+    auth_token?: string | null;
+    qos: number;
+    retain: boolean;
+    is_active: boolean;
+  }
+): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/outbound-targets`, {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) throw await buildApiError(response, "Outbound hedef oluşturulamadı.");
+}
+
+export async function updateOutboundTarget(
+  token: string,
+  targetId: number,
+  payload: {
+    endpoint?: string;
+    topic?: string | null;
+    event_filter?: "all" | "telemetry" | "alarm";
+    auth_header?: string | null;
+    auth_token?: string | null;
+    qos?: number;
+    retain?: boolean;
+    is_active?: boolean;
+  }
+): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/outbound-targets/${targetId}`, {
+    method: "PATCH",
+    headers: authHeaders(token),
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) throw await buildApiError(response, "Outbound hedef güncellenemedi.");
+}
+
+export async function deleteOutboundTarget(token: string, targetId: number): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/outbound-targets/${targetId}`, {
+    method: "DELETE",
+    headers: authHeaders(token)
+  });
+  if (!response.ok) throw await buildApiError(response, "Outbound hedef silinemedi.");
+}
+
+export async function fetchNotificationSettings(token: string): Promise<NotificationSettings> {
+  const response = await fetch(`${API_BASE_URL}/notification-settings`, {
+    headers: authHeaders(token)
+  });
+  if (!response.ok) throw await buildApiError(response, "Bildirim ayarları alınamadı.");
+  return (await response.json()) as NotificationSettings;
+}
+
+export async function updateNotificationSettings(
+  token: string,
+  payload: NotificationSettings
+): Promise<NotificationSettings> {
+  const response = await fetch(`${API_BASE_URL}/notification-settings`, {
+    method: "PUT",
+    headers: authHeaders(token),
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) throw await buildApiError(response, "Bildirim ayarları kaydedilemedi.");
+  return (await response.json()) as NotificationSettings;
 }

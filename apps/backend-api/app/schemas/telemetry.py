@@ -11,6 +11,13 @@ class TelemetryIn(BaseModel):
     source_timestamp: datetime
 
 
+class GatewayTelemetryBatch(BaseModel):
+    gateway_code: str
+    sequence_no: int
+    sent_at: datetime
+    readings: list[TelemetryIn]
+
+
 class TelemetryRead(BaseModel):
     id: int
     device_id: int

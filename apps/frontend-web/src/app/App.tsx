@@ -5,6 +5,7 @@ import { UserManagementPanel } from "../features/auth/UserManagementPanel";
 import { AlarmsPage } from "../features/alarms/AlarmsPage";
 import { EventsPage } from "../features/events/EventsPage";
 import { DeviceManagementPanel } from "../features/devices/DeviceManagementPanel";
+import { OutboundTargetsPanel } from "../features/outbound/OutboundTargetsPanel";
 import { DeviceSidebar } from "../features/devices/DeviceSidebar";
 import { LiveValuesTab } from "../features/live-values/LiveValuesTab";
 import { DeviceMapTab } from "../features/map/DeviceMapTab";
@@ -24,6 +25,7 @@ import {
   fetchSystemEvents,
   fetchLiveValues,
   fetchMe,
+  fetchOutboundTargets,
   fetchUsers,
   loadSession,
   login,
@@ -37,15 +39,18 @@ import {
   resetAlarm,
   resetAllAlarms,
   updateGateway,
+  updateOutboundTarget,
   updateDevice,
+  createOutboundTarget,
+  deleteOutboundTarget,
   updateUser,
   updateMyProfile
 } from "../shared/api";
-import type { AlarmComment, AlarmEvent, AuthSession, DeviceRow, Gateway, LiveValue, SystemEvent, UserRead } from "../shared/types";
+import type { AlarmComment, AlarmEvent, AuthSession, DeviceRow, Gateway, LiveValue, OutboundTarget, SystemEvent, UserRead } from "../shared/types";
 
 type TabId = "map" | "values";
 type PageMode = "home" | "alarms" | "events" | "engineering";
-type EngineeringPage = "devices" | "users";
+type EngineeringPage = "devices" | "users" | "outbound";
 type NotificationSettings = {
   smtp_host: string;
   smtp_port: string;
@@ -53,11 +58,6 @@ type NotificationSettings = {
   smtp_password: string;
   smtp_from_email: string;
   smtp_use_tls: boolean;
-  sms_provider: string;
-  sms_api_url: string;
-  sms_api_key: string;
-  sms_api_secret: string;
-  sms_sender: string;
 };
 
 const NOTIFICATION_SETTINGS_STORAGE_KEY = "hsl-notification-settings";
@@ -72,12 +72,7 @@ function loadNotificationSettings(): NotificationSettings {
         smtp_username: "",
         smtp_password: "",
         smtp_from_email: "",
-        smtp_use_tls: true,
-        sms_provider: "",
-        sms_api_url: "",
-        sms_api_key: "",
-        sms_api_secret: "",
-        sms_sender: ""
+        smtp_use_tls: true
       };
     }
     const parsed = JSON.parse(raw) as Partial<NotificationSettings>;
@@ -87,12 +82,7 @@ function loadNotificationSettings(): NotificationSettings {
       smtp_username: parsed.smtp_username ?? "",
       smtp_password: parsed.smtp_password ?? "",
       smtp_from_email: parsed.smtp_from_email ?? "",
-      smtp_use_tls: parsed.smtp_use_tls ?? true,
-      sms_provider: parsed.sms_provider ?? "",
-      sms_api_url: parsed.sms_api_url ?? "",
-      sms_api_key: parsed.sms_api_key ?? "",
-      sms_api_secret: parsed.sms_api_secret ?? "",
-      sms_sender: parsed.sms_sender ?? ""
+      smtp_use_tls: parsed.smtp_use_tls ?? true
     };
   } catch {
     return {
@@ -101,12 +91,7 @@ function loadNotificationSettings(): NotificationSettings {
       smtp_username: "",
       smtp_password: "",
       smtp_from_email: "",
-      smtp_use_tls: true,
-      sms_provider: "",
-      sms_api_url: "",
-      sms_api_key: "",
-      sms_api_secret: "",
-      sms_sender: ""
+      smtp_use_tls: true
     };
   }
 }
@@ -120,6 +105,7 @@ export function App() {
   const [events, setEvents] = useState<SystemEvent[]>([]);
   const [gateways, setGateways] = useState<Gateway[]>([]);
   const [devicesByGateway, setDevicesByGateway] = useState<DeviceRow[]>([]);
+  const [outboundTargets, setOutboundTargets] = useState<OutboundTarget[]>([]);
   const [alarmsLoading, setAlarmsLoading] = useState(false);
   const [currentUser, setCurrentUser] = useState<UserRead | null>(null);
   const [authError, setAuthError] = useState<string>();
@@ -163,9 +149,12 @@ export function App() {
           setGateways(gatewayRows);
           const allUsers = await fetchUsers(session.accessToken);
           setUsers(allUsers);
+          const outboundRows = await fetchOutboundTargets(session.accessToken);
+          setOutboundTargets(outboundRows);
         } else {
           setGateways([]);
           setUsers([]);
+          setOutboundTargets([]);
         }
       } catch {
         setAuthError("Oturum geçersiz veya API erişilemiyor.");
@@ -215,6 +204,7 @@ export function App() {
     setEvents([]);
     setGateways([]);
     setDevicesByGateway([]);
+    setOutboundTargets([]);
     setEngineeringPage("devices");
     setPageMode("home");
   };
@@ -403,6 +393,53 @@ export function App() {
     setDevicesByGateway((prev) => prev.filter((item) => item.code !== deviceCode));
   };
 
+  const reloadOutboundTargets = async () => {
+    if (!session || session.role !== "engineer") return;
+    const rows = await fetchOutboundTargets(session.accessToken);
+    setOutboundTargets(rows);
+  };
+
+  const handleCreateOutboundTarget = async (payload: {
+    name: string;
+    protocol: "rest" | "mqtt";
+    endpoint: string;
+    topic?: string | null;
+    event_filter: "all" | "telemetry" | "alarm";
+    auth_header?: string | null;
+    auth_token?: string | null;
+    qos: number;
+    retain: boolean;
+    is_active: boolean;
+  }) => {
+    if (!session) return;
+    await createOutboundTarget(session.accessToken, payload);
+    await reloadOutboundTargets();
+  };
+
+  const handleUpdateOutboundTarget = async (
+    targetId: number,
+    payload: {
+      endpoint?: string;
+      topic?: string | null;
+      event_filter?: "all" | "telemetry" | "alarm";
+      auth_header?: string | null;
+      auth_token?: string | null;
+      qos?: number;
+      retain?: boolean;
+      is_active?: boolean;
+    }
+  ) => {
+    if (!session) return;
+    await updateOutboundTarget(session.accessToken, targetId, payload);
+    await reloadOutboundTargets();
+  };
+
+  const handleDeleteOutboundTarget = async (targetId: number) => {
+    if (!session) return;
+    await deleteOutboundTarget(session.accessToken, targetId);
+    await reloadOutboundTargets();
+  };
+
   const handleOpenSettings = () => {
     if (currentUser) {
       setSettingsFullName(currentUser.full_name);
@@ -477,6 +514,12 @@ export function App() {
               >
                 Kullanıcılar
               </button>
+              <button
+                className={engineeringPage === "outbound" ? "active" : ""}
+                onClick={() => setEngineeringPage("outbound")}
+              >
+                Outbound
+              </button>
             </div>
 
             {engineeringPage === "devices" ? (
@@ -499,6 +542,14 @@ export function App() {
                 onDelete={handleDeleteUser}
                 onUpdate={handleUpdateUser}
                 onResetPassword={handleResetUserPassword}
+              />
+            ) : null}
+            {engineeringPage === "outbound" && session.role !== "operator" ? (
+              <OutboundTargetsPanel
+                targets={outboundTargets}
+                onCreate={handleCreateOutboundTarget}
+                onUpdate={handleUpdateOutboundTarget}
+                onDelete={handleDeleteOutboundTarget}
               />
             ) : null}
           </main>
@@ -639,55 +690,6 @@ export function App() {
                 }
               />
               TLS Kullan
-            </label>
-            <label>
-              SMS Sağlayıcı
-              <input
-                value={notificationSettings.sms_provider}
-                onChange={(event) =>
-                  setNotificationSettings((prev) => ({ ...prev, sms_provider: event.target.value }))
-                }
-                placeholder="Twilio / Netgsm / ..."
-              />
-            </label>
-            <label>
-              SMS API URL
-              <input
-                value={notificationSettings.sms_api_url}
-                onChange={(event) =>
-                  setNotificationSettings((prev) => ({ ...prev, sms_api_url: event.target.value }))
-                }
-                placeholder="https://..."
-              />
-            </label>
-            <label>
-              SMS API Key
-              <input
-                value={notificationSettings.sms_api_key}
-                onChange={(event) =>
-                  setNotificationSettings((prev) => ({ ...prev, sms_api_key: event.target.value }))
-                }
-              />
-            </label>
-            <label>
-              SMS API Secret
-              <input
-                type="password"
-                value={notificationSettings.sms_api_secret}
-                onChange={(event) =>
-                  setNotificationSettings((prev) => ({ ...prev, sms_api_secret: event.target.value }))
-                }
-              />
-            </label>
-            <label>
-              SMS Gönderen Başlığı
-              <input
-                value={notificationSettings.sms_sender}
-                onChange={(event) =>
-                  setNotificationSettings((prev) => ({ ...prev, sms_sender: event.target.value }))
-                }
-                placeholder="FORMELKTRK"
-              />
             </label>
             {settingsError ? <p className="error-text">{settingsError}</p> : null}
             <div className="settings-actions">

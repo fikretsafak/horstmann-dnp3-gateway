@@ -1,23 +1,27 @@
-from datetime import datetime, timezone
-
-from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from fastapi import APIRouter, Depends, status
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
 from app.db.session import get_db
-from app.models.alarm import AlarmComment, AlarmEvent
 from app.models.user import User
 from app.schemas.alarm import AlarmAssignRequest, AlarmCommentCreate, AlarmCommentRead, AlarmEventRead
-from app.services.event_service import record_event
+from app.services.alarm_engine_service import (
+    acknowledge_alarm as acknowledge_alarm_service,
+    acknowledge_all_alarms as acknowledge_all_alarms_service,
+    assign_alarm as assign_alarm_service,
+    create_alarm_comment as create_alarm_comment_service,
+    list_alarm_comments as list_alarm_comments_service,
+    list_alarm_events as list_alarm_events_service,
+    reset_alarm as reset_alarm_service,
+    reset_all_alarms as reset_all_alarms_service,
+)
 
 router = APIRouter(prefix="/alarms", tags=["alarms"])
 
 
 @router.get("/events", response_model=list[AlarmEventRead])
 def list_alarm_events(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
-    stmt = select(AlarmEvent).order_by(AlarmEvent.created_at.desc()).limit(500)
-    return list(db.scalars(stmt).all())
+    return list_alarm_events_service(db)
 
 
 @router.patch("/events/{alarm_id}/assign", response_model=AlarmEventRead)
@@ -27,31 +31,12 @@ def assign_alarm(
     db: Session = Depends(get_db),
     _: User = Depends(get_current_user),
 ):
-    alarm = db.get(AlarmEvent, alarm_id)
-    if alarm is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alarm not found")
-    alarm.assigned_to = payload.assigned_to.strip() if payload.assigned_to else None
-    record_event(
-        db,
-        category="alarm",
-        event_type="alarm_assigned",
-        severity="info",
-        actor_username=_.username,
-        message=f"Alarm #{alarm.id} ataması güncellendi",
-        metadata={"alarm_id": alarm.id, "assigned_to": alarm.assigned_to},
-    )
-    db.commit()
-    db.refresh(alarm)
-    return alarm
+    return assign_alarm_service(db, alarm_id, payload.assigned_to, _.username)
 
 
 @router.get("/events/{alarm_id}/comments", response_model=list[AlarmCommentRead])
 def list_alarm_comments(alarm_id: int, db: Session = Depends(get_db), _: User = Depends(get_current_user)):
-    alarm = db.get(AlarmEvent, alarm_id)
-    if alarm is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alarm not found")
-    stmt = select(AlarmComment).where(AlarmComment.alarm_event_id == alarm_id).order_by(AlarmComment.created_at.desc())
-    return list(db.scalars(stmt).all())
+    return list_alarm_comments_service(db, alarm_id)
 
 
 @router.post("/events/{alarm_id}/comments", response_model=AlarmCommentRead, status_code=status.HTTP_201_CREATED)
@@ -61,113 +46,24 @@ def create_alarm_comment(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    alarm = db.get(AlarmEvent, alarm_id)
-    if alarm is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alarm not found")
-    comment_text = payload.comment.strip()
-    if not comment_text:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Comment cannot be empty")
-
-    row = AlarmComment(
-        alarm_event_id=alarm_id,
-        author_username=current_user.username,
-        comment=comment_text,
-        created_at=datetime.now(timezone.utc),
-    )
-    db.add(row)
-    record_event(
-        db,
-        category="alarm",
-        event_type="alarm_comment_added",
-        severity="info",
-        actor_username=current_user.username,
-        message=f"Alarm #{alarm.id} için yorum eklendi",
-        metadata={"alarm_id": alarm.id},
-    )
-    db.commit()
-    db.refresh(row)
-    return row
+    return create_alarm_comment_service(db, alarm_id, payload.comment, current_user)
 
 
 @router.patch("/events/{alarm_id}/ack", response_model=AlarmEventRead)
 def acknowledge_alarm(alarm_id: int, db: Session = Depends(get_db), _: User = Depends(get_current_user)):
-    alarm = db.get(AlarmEvent, alarm_id)
-    if alarm is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alarm not found")
-    alarm.acknowledged = True
-    alarm.acknowledged_at = datetime.now(timezone.utc)
-    record_event(
-        db,
-        category="alarm",
-        event_type="alarm_acknowledged",
-        severity="info",
-        actor_username=_.username,
-        message=f"Alarm #{alarm.id} onaylandı",
-        metadata={"alarm_id": alarm.id},
-    )
-    db.commit()
-    db.refresh(alarm)
-    return alarm
+    return acknowledge_alarm_service(db, alarm_id, _.username)
 
 
 @router.patch("/events/{alarm_id}/reset", response_model=AlarmEventRead)
 def reset_alarm(alarm_id: int, db: Session = Depends(get_db), _: User = Depends(get_current_user)):
-    alarm = db.get(AlarmEvent, alarm_id)
-    if alarm is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Alarm not found")
-    alarm.reset = True
-    alarm.reset_at = datetime.now(timezone.utc)
-    record_event(
-        db,
-        category="alarm",
-        event_type="alarm_reset",
-        severity="warning",
-        actor_username=_.username,
-        message=f"Alarm #{alarm.id} resetlendi",
-        metadata={"alarm_id": alarm.id},
-    )
-    db.commit()
-    db.refresh(alarm)
-    return alarm
+    return reset_alarm_service(db, alarm_id, _.username)
 
 
 @router.post("/events/ack-all", response_model=list[AlarmEventRead])
 def acknowledge_all_alarms(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
-    stmt = select(AlarmEvent).order_by(AlarmEvent.created_at.desc()).limit(500)
-    alarms = list(db.scalars(stmt).all())
-    now = datetime.now(timezone.utc)
-    for alarm in alarms:
-        alarm.acknowledged = True
-        alarm.acknowledged_at = now
-    record_event(
-        db,
-        category="alarm",
-        event_type="alarm_acknowledge_all",
-        severity="info",
-        actor_username=_.username,
-        message="Tüm alarmlar onaylandı",
-        metadata={"count": len(alarms)},
-    )
-    db.commit()
-    return alarms
+    return acknowledge_all_alarms_service(db, _.username)
 
 
 @router.post("/events/reset-all", response_model=list[AlarmEventRead])
 def reset_all_alarms(db: Session = Depends(get_db), _: User = Depends(get_current_user)):
-    stmt = select(AlarmEvent).order_by(AlarmEvent.created_at.desc()).limit(500)
-    alarms = list(db.scalars(stmt).all())
-    now = datetime.now(timezone.utc)
-    for alarm in alarms:
-        alarm.reset = True
-        alarm.reset_at = now
-    record_event(
-        db,
-        category="alarm",
-        event_type="alarm_reset_all",
-        severity="warning",
-        actor_username=_.username,
-        message="Tüm alarmlar resetlendi",
-        metadata={"count": len(alarms)},
-    )
-    db.commit()
-    return alarms
+    return reset_all_alarms_service(db, _.username)

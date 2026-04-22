@@ -122,3 +122,30 @@ export type Gateway = {
   is_active: boolean;
   last_seen_at?: string | null;
 };
+
+export type OutboundTarget = {
+  id: number;
+  name: string;
+  protocol: "rest" | "mqtt";
+  endpoint: string;
+  topic?: string | null;
+  event_filter: "all" | "telemetry" | "alarm";
+  auth_header?: string | null;
+  auth_token?: string | null;
+  qos: number;
+  retain: boolean;
+  is_active: boolean;
+};
+
+export type NotificationSettings = {
+  smtp_enabled: boolean;
+  smtp_host: string;
+  smtp_port: number;
+  smtp_username: string;
+  smtp_password: string;
+  smtp_from_email: string;
+  sms_enabled: boolean;
+  sms_provider: string;
+  sms_api_url: string;
+  sms_api_key: string;
+};
