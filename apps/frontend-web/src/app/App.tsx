@@ -6,6 +6,7 @@ import { AlarmsPage } from "../features/alarms/AlarmsPage";
 import { EventsPage } from "../features/events/EventsPage";
 import { DeviceManagementPanel } from "../features/devices/DeviceManagementPanel";
 import { OutboundTargetsPanel } from "../features/outbound/OutboundTargetsPanel";
+import { NotificationSettingsPanel } from "../features/settings/NotificationSettingsPanel";
 import { DeviceSidebar } from "../features/devices/DeviceSidebar";
 import { LiveValuesTab } from "../features/live-values/LiveValuesTab";
 import { DeviceMapTab } from "../features/map/DeviceMapTab";
@@ -25,6 +26,7 @@ import {
   fetchSystemEvents,
   fetchLiveValues,
   fetchMe,
+  fetchNotificationSettings,
   fetchOutboundTargets,
   fetchUsers,
   loadSession,
@@ -43,58 +45,26 @@ import {
   updateDevice,
   createOutboundTarget,
   deleteOutboundTarget,
+  updateNotificationSettings as updateNotificationSettingsApi,
   updateUser,
   updateMyProfile
 } from "../shared/api";
-import type { AlarmComment, AlarmEvent, AuthSession, DeviceRow, Gateway, LiveValue, OutboundTarget, SystemEvent, UserRead } from "../shared/types";
+import type {
+  AlarmComment,
+  AlarmEvent,
+  AuthSession,
+  DeviceRow,
+  Gateway,
+  LiveValue,
+  NotificationSettings,
+  OutboundTarget,
+  SystemEvent,
+  UserRead
+} from "../shared/types";
 
 type TabId = "map" | "values";
 type PageMode = "home" | "alarms" | "events" | "engineering";
-type EngineeringPage = "devices" | "users" | "outbound";
-type NotificationSettings = {
-  smtp_host: string;
-  smtp_port: string;
-  smtp_username: string;
-  smtp_password: string;
-  smtp_from_email: string;
-  smtp_use_tls: boolean;
-};
-
-const NOTIFICATION_SETTINGS_STORAGE_KEY = "hsl-notification-settings";
-
-function loadNotificationSettings(): NotificationSettings {
-  try {
-    const raw = localStorage.getItem(NOTIFICATION_SETTINGS_STORAGE_KEY);
-    if (!raw) {
-      return {
-        smtp_host: "",
-        smtp_port: "587",
-        smtp_username: "",
-        smtp_password: "",
-        smtp_from_email: "",
-        smtp_use_tls: true
-      };
-    }
-    const parsed = JSON.parse(raw) as Partial<NotificationSettings>;
-    return {
-      smtp_host: parsed.smtp_host ?? "",
-      smtp_port: parsed.smtp_port ?? "587",
-      smtp_username: parsed.smtp_username ?? "",
-      smtp_password: parsed.smtp_password ?? "",
-      smtp_from_email: parsed.smtp_from_email ?? "",
-      smtp_use_tls: parsed.smtp_use_tls ?? true
-    };
-  } catch {
-    return {
-      smtp_host: "",
-      smtp_port: "587",
-      smtp_username: "",
-      smtp_password: "",
-      smtp_from_email: "",
-      smtp_use_tls: true
-    };
-  }
-}
+type EngineeringPage = "devices" | "users" | "outbound" | "notifications";
 
 export function App() {
   const [session, setSession] = useState<AuthSession | null>(() => loadSession());
@@ -120,9 +90,12 @@ export function App() {
   const [settingsEmail, setSettingsEmail] = useState("");
   const [settingsCurrentPassword, setSettingsCurrentPassword] = useState("");
   const [settingsNewPassword, setSettingsNewPassword] = useState("");
-  const [notificationSettings, setNotificationSettings] = useState<NotificationSettings>(loadNotificationSettings);
   const [settingsSaving, setSettingsSaving] = useState(false);
   const [settingsError, setSettingsError] = useState("");
+  const [notificationSettings, setNotificationSettings] = useState<NotificationSettings | null>(null);
+  const [notificationSettingsLoading, setNotificationSettingsLoading] = useState(false);
+  const [notificationSettingsSaving, setNotificationSettingsSaving] = useState(false);
+  const [notificationSettingsError, setNotificationSettingsError] = useState("");
 
   useEffect(() => {
     const load = async () => {
@@ -151,10 +124,13 @@ export function App() {
           setUsers(allUsers);
           const outboundRows = await fetchOutboundTargets(session.accessToken);
           setOutboundTargets(outboundRows);
+          const notificationRows = await fetchNotificationSettings(session.accessToken);
+          setNotificationSettings(notificationRows);
         } else {
           setGateways([]);
           setUsers([]);
           setOutboundTargets([]);
+          setNotificationSettings(null);
         }
       } catch {
         setAuthError("Oturum geçersiz veya API erişilemiyor.");
@@ -205,6 +181,7 @@ export function App() {
     setGateways([]);
     setDevicesByGateway([]);
     setOutboundTargets([]);
+    setNotificationSettings(null);
     setEngineeringPage("devices");
     setPageMode("home");
   };
@@ -440,6 +417,35 @@ export function App() {
     await reloadOutboundTargets();
   };
 
+  const reloadNotificationSettings = async () => {
+    if (!session || session.role !== "engineer") return;
+    setNotificationSettingsLoading(true);
+    setNotificationSettingsError("");
+    try {
+      const rows = await fetchNotificationSettings(session.accessToken);
+      setNotificationSettings(rows);
+    } catch (error) {
+      setNotificationSettingsError(error instanceof Error ? error.message : "Bildirim ayarları alınamadı.");
+    } finally {
+      setNotificationSettingsLoading(false);
+    }
+  };
+
+  const handleSaveNotificationSettings = async (payload: NotificationSettings) => {
+    if (!session) return;
+    setNotificationSettingsSaving(true);
+    setNotificationSettingsError("");
+    try {
+      const updated = await updateNotificationSettingsApi(session.accessToken, payload);
+      setNotificationSettings(updated);
+    } catch (error) {
+      setNotificationSettingsError(error instanceof Error ? error.message : "Bildirim ayarları kaydedilemedi.");
+      throw error;
+    } finally {
+      setNotificationSettingsSaving(false);
+    }
+  };
+
   const handleOpenSettings = () => {
     if (currentUser) {
       setSettingsFullName(currentUser.full_name);
@@ -448,7 +454,6 @@ export function App() {
     setSettingsCurrentPassword("");
     setSettingsNewPassword("");
     setSettingsError("");
-    setNotificationSettings(loadNotificationSettings());
     setSettingsOpen(true);
   };
 
@@ -468,7 +473,6 @@ export function App() {
           new_password: settingsNewPassword
         });
       }
-      localStorage.setItem(NOTIFICATION_SETTINGS_STORAGE_KEY, JSON.stringify(notificationSettings));
       setSettingsOpen(false);
     } catch (error) {
       setSettingsError(error instanceof Error ? error.message : "Ayarlar kaydedilemedi.");
@@ -520,6 +524,15 @@ export function App() {
               >
                 Outbound
               </button>
+              <button
+                className={engineeringPage === "notifications" ? "active" : ""}
+                onClick={() => {
+                  setEngineeringPage("notifications");
+                  void reloadNotificationSettings();
+                }}
+              >
+                Bildirim Ayarları
+              </button>
             </div>
 
             {engineeringPage === "devices" ? (
@@ -550,6 +563,15 @@ export function App() {
                 onCreate={handleCreateOutboundTarget}
                 onUpdate={handleUpdateOutboundTarget}
                 onDelete={handleDeleteOutboundTarget}
+              />
+            ) : null}
+            {engineeringPage === "notifications" && session.role !== "operator" ? (
+              <NotificationSettingsPanel
+                initialSettings={notificationSettings}
+                loading={notificationSettingsLoading}
+                saving={notificationSettingsSaving}
+                error={notificationSettingsError}
+                onSave={handleSaveNotificationSettings}
               />
             ) : null}
           </main>
@@ -627,69 +649,6 @@ export function App() {
                 value={settingsNewPassword}
                 onChange={(event) => setSettingsNewPassword(event.target.value)}
               />
-            </label>
-            <h3>Bildirim Ayarları</h3>
-            <label>
-              SMTP Sunucu
-              <input
-                value={notificationSettings.smtp_host}
-                onChange={(event) =>
-                  setNotificationSettings((prev) => ({ ...prev, smtp_host: event.target.value }))
-                }
-                placeholder="smtp.ornek.com"
-              />
-            </label>
-            <label>
-              SMTP Port
-              <input
-                type="number"
-                min={1}
-                max={65535}
-                value={notificationSettings.smtp_port}
-                onChange={(event) =>
-                  setNotificationSettings((prev) => ({ ...prev, smtp_port: event.target.value }))
-                }
-              />
-            </label>
-            <label>
-              SMTP Kullanıcı Adı
-              <input
-                value={notificationSettings.smtp_username}
-                onChange={(event) =>
-                  setNotificationSettings((prev) => ({ ...prev, smtp_username: event.target.value }))
-                }
-              />
-            </label>
-            <label>
-              SMTP Şifre
-              <input
-                type="password"
-                value={notificationSettings.smtp_password}
-                onChange={(event) =>
-                  setNotificationSettings((prev) => ({ ...prev, smtp_password: event.target.value }))
-                }
-              />
-            </label>
-            <label>
-              Gönderen E-posta
-              <input
-                type="email"
-                value={notificationSettings.smtp_from_email}
-                onChange={(event) =>
-                  setNotificationSettings((prev) => ({ ...prev, smtp_from_email: event.target.value }))
-                }
-                placeholder="alarm@firma.com"
-              />
-            </label>
-            <label className="notify-option">
-              <input
-                type="checkbox"
-                checked={notificationSettings.smtp_use_tls}
-                onChange={(event) =>
-                  setNotificationSettings((prev) => ({ ...prev, smtp_use_tls: event.target.checked }))
-                }
-              />
-              TLS Kullan
             </label>
             {settingsError ? <p className="error-text">{settingsError}</p> : null}
             <div className="settings-actions">
