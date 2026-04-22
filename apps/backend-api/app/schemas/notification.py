@@ -28,3 +28,19 @@ class NotificationSettingsUpdate(BaseModel):
     sms_provider: str
     sms_api_url: str
     sms_api_key: str
+
+
+class NotificationSmtpTestRequest(BaseModel):
+    recipient_email: EmailStr
+    subject: str | None = None
+    message: str | None = None
+
+
+class NotificationSmsTestRequest(BaseModel):
+    recipient_phone: str
+    message: str | None = None
+
+
+class NotificationTestResult(BaseModel):
+    ok: bool
+    detail: str

@@ -45,6 +45,8 @@ import {
   updateDevice,
   createOutboundTarget,
   deleteOutboundTarget,
+  testNotificationSms,
+  testNotificationSmtp,
   updateNotificationSettings as updateNotificationSettingsApi,
   updateUser,
   updateMyProfile
@@ -446,6 +448,24 @@ export function App() {
     }
   };
 
+  const handleTestNotificationSmtp = async (payload: {
+    recipient_email: string;
+    subject?: string;
+    message?: string;
+  }) => {
+    if (!session) {
+      throw new Error("Oturum bulunamadı.");
+    }
+    return testNotificationSmtp(session.accessToken, payload);
+  };
+
+  const handleTestNotificationSms = async (payload: { recipient_phone: string; message?: string }) => {
+    if (!session) {
+      throw new Error("Oturum bulunamadı.");
+    }
+    return testNotificationSms(session.accessToken, payload);
+  };
+
   const handleOpenSettings = () => {
     if (currentUser) {
       setSettingsFullName(currentUser.full_name);
@@ -572,6 +592,8 @@ export function App() {
                 saving={notificationSettingsSaving}
                 error={notificationSettingsError}
                 onSave={handleSaveNotificationSettings}
+                onTestSmtp={handleTestNotificationSmtp}
+                onTestSms={handleTestNotificationSms}
               />
             ) : null}
           </main>

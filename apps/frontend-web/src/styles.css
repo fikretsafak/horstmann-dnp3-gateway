@@ -1061,6 +1061,50 @@ body {
   overflow: auto;
 }
 
+.notification-tab-panel {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+
+.notification-settings-panel {
+  width: 100%;
+  max-width: none;
+  margin: 0;
+  border: none;
+  padding: 0;
+  box-shadow: none;
+  background: transparent;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+
+.notification-columns {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  align-items: start;
+  flex: 1;
+  min-height: 0;
+}
+
+.notification-card {
+  border: 1px solid #d1d5db;
+  border-radius: 10px;
+  background: #f8fafc;
+  padding: 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.notification-card h4 {
+  margin: 0 0 6px;
+  color: #0f172a;
+}
+
 .live-values-panel {
   margin-top: 0;
   display: flex;
@@ -1696,5 +1740,9 @@ body {
 
   .login-card {
     padding: 28px;
+  }
+
+  .notification-columns {
+    grid-template-columns: 1fr;
   }
 }

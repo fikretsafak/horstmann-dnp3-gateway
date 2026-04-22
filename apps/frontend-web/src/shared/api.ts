@@ -523,3 +523,29 @@ export async function updateNotificationSettings(
   if (!response.ok) throw await buildApiError(response, "Bildirim ayarları kaydedilemedi.");
   return (await response.json()) as NotificationSettings;
 }
+
+export async function testNotificationSmtp(
+  token: string,
+  payload: { recipient_email: string; subject?: string; message?: string }
+): Promise<{ ok: boolean; detail: string }> {
+  const response = await fetch(`${API_BASE_URL}/notification-settings/test-smtp`, {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) throw await buildApiError(response, "SMTP test gönderimi başarısız.");
+  return (await response.json()) as { ok: boolean; detail: string };
+}
+
+export async function testNotificationSms(
+  token: string,
+  payload: { recipient_phone: string; message?: string }
+): Promise<{ ok: boolean; detail: string }> {
+  const response = await fetch(`${API_BASE_URL}/notification-settings/test-sms`, {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) throw await buildApiError(response, "SMS test gönderimi başarısız.");
+  return (await response.json()) as { ok: boolean; detail: string };
+}
