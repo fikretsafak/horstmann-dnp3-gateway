@@ -1,21 +1,22 @@
 import { useEffect, useState, type FormEvent } from "react";
 
-import type { UserRead } from "../../shared/types";
+import type { UserRead, UserRole } from "../../shared/types";
 
 type Props = {
   users: UserRead[];
+  currentUserId?: number;
   onCreate: (payload: {
     username: string;
     email: string;
     phone_number?: string | null;
     full_name: string;
     password: string;
-    role: "operator" | "engineer";
+    role: UserRole;
   }) => Promise<void>;
   onDelete: (userId: number) => Promise<void>;
   onUpdate: (
     userId: number,
-    payload: { email: string; phone_number?: string | null; full_name: string; role: "operator" | "engineer" }
+    payload: { email: string; phone_number?: string | null; full_name: string; role: UserRole }
   ) => Promise<void>;
   onResetPassword: (userId: number, newPassword: string) => Promise<void>;
 };
@@ -27,7 +28,14 @@ type NotificationPrefs = {
 
 const NOTIFICATION_PREFS_STORAGE_KEY = "hsl-user-notification-prefs";
 
-export function UserManagementPanel({ users, onCreate, onDelete, onUpdate, onResetPassword }: Props) {
+export function UserManagementPanel({
+  users,
+  currentUserId,
+  onCreate,
+  onDelete,
+  onUpdate,
+  onResetPassword
+}: Props) {
   const [isCreateModalOpen, setCreateModalOpen] = useState(false);
   const [editingUserId, setEditingUserId] = useState<number | null>(null);
   const [passwordResetUser, setPasswordResetUser] = useState<UserRead | null>(null);
@@ -39,7 +47,7 @@ export function UserManagementPanel({ users, onCreate, onDelete, onUpdate, onRes
   const [editUsername, setEditUsername] = useState("");
   const [resetPassword, setResetPassword] = useState("");
   const [resetPasswordConfirm, setResetPasswordConfirm] = useState("");
-  const [role, setRole] = useState<"operator" | "engineer">("operator");
+  const [role, setRole] = useState<UserRole>("operator");
   const [emailNotify, setEmailNotify] = useState(true);
   const [smsNotify, setSmsNotify] = useState(false);
   const [submitError, setSubmitError] = useState("");
@@ -111,7 +119,7 @@ export function UserManagementPanel({ users, onCreate, onDelete, onUpdate, onRes
     setEmail(user.email);
     setFullName(user.full_name);
     setPhoneNumber(user.phone_number ?? "");
-    setRole((user.role === "engineer" ? "engineer" : "operator") as "operator" | "engineer");
+    setRole(user.role);
     const prefs = notificationPrefs[user.id] ?? { email: true, sms: false };
     setEmailNotify(prefs.email);
     setSmsNotify(prefs.sms);
@@ -241,9 +249,10 @@ export function UserManagementPanel({ users, onCreate, onDelete, onUpdate, onRes
             </label>
             <label>
               Rol
-              <select value={role} onChange={(event) => setRole(event.target.value as "operator" | "engineer")}>
+              <select value={role} onChange={(event) => setRole(event.target.value as UserRole)}>
                 <option value="operator">Operatör</option>
                 <option value="engineer">Mühendis</option>
+                <option value="installer">Kurulumcu (Süper Admin)</option>
               </select>
             </label>
             <fieldset className="notify-group">
@@ -294,9 +303,10 @@ export function UserManagementPanel({ users, onCreate, onDelete, onUpdate, onRes
             </label>
             <label>
               Rol
-              <select value={role} onChange={(event) => setRole(event.target.value as "operator" | "engineer")}>
+              <select value={role} onChange={(event) => setRole(event.target.value as UserRole)}>
                 <option value="operator">Operatör</option>
                 <option value="engineer">Mühendis</option>
+                <option value="installer">Kurulumcu (Süper Admin)</option>
               </select>
             </label>
             <fieldset className="notify-group">
@@ -401,7 +411,12 @@ export function UserManagementPanel({ users, onCreate, onDelete, onUpdate, onRes
                 <button className="secondary-btn action-btn" onClick={() => openResetPasswordModal(user)}>
                   Şifre Sıfırla
                 </button>
-                <button className="danger-btn action-btn" onClick={() => void handleDeleteClick(user)}>
+                <button
+                  className="danger-btn action-btn"
+                  onClick={() => void handleDeleteClick(user)}
+                  disabled={currentUserId === user.id}
+                  title={currentUserId === user.id ? "Kendinizi silemezsiniz" : "Kullanıcıyı sil"}
+                >
                   Sil
                 </button>
               </td>

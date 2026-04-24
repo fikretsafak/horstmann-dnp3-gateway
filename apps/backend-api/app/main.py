@@ -2,13 +2,13 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
-from app.api import alarms, auth, devices, events, gateways, health, notification_settings, outbound_targets, telemetry, users
+from app.api import alarm_rules, alarms, auth, devices, events, gateways, health, internal, notification_settings, outbound_targets, signals, telemetry, users
 from app.core.config import settings
 from app.db.base import Base
-from app.db.session import engine
-from app.models import alarm, device, gateway, gateway_ingest_batch, notification_settings as notification_settings_model, outbound_target, system_event, telemetry as telemetry_model, user  # noqa: F401
-from app.services.event_bus import event_bus
-from app.services.worker_bootstrap import bootstrap_consumers
+from app.db.session import SessionLocal, engine
+from app.models import alarm, alarm_rule, device, gateway, gateway_ingest_batch, notification_settings as notification_settings_model, outbound_target, outbox_event, processed_message, signal_catalog, system_event, telemetry as telemetry_model, user  # noqa: F401
+from app.services.outbox_service import flush_outbox
+from app.services.signal_catalog_seed import seed_default_signals
 
 app = FastAPI(title=settings.app_name)
 
@@ -30,11 +30,17 @@ app.include_router(events.router, prefix=settings.api_prefix)
 app.include_router(users.router, prefix=settings.api_prefix)
 app.include_router(notification_settings.router, prefix=settings.api_prefix)
 app.include_router(outbound_targets.router, prefix=settings.api_prefix)
+app.include_router(signals.router, prefix=settings.api_prefix)
+app.include_router(alarm_rules.router, prefix=settings.api_prefix)
+app.include_router(internal.router, prefix=settings.api_prefix)
 
 
 @app.on_event("startup")
 def create_tables():
     Base.metadata.create_all(bind=engine)
+    # ALTER TYPE ADD VALUE transaction icinde calistirilamaz; autocommit kullan.
+    with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as ac_conn:
+        ac_conn.execute(text("ALTER TYPE userrole ADD VALUE IF NOT EXISTS 'INSTALLER'"))
     with engine.begin() as connection:
         # Keep Windows-first setup easy by ensuring newly added columns exist.
         connection.execute(text("ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_number VARCHAR(32)"))
@@ -52,6 +58,13 @@ def create_tables():
         connection.execute(text("ALTER TABLE gateways ADD COLUMN IF NOT EXISTS batch_interval_sec INTEGER DEFAULT 5"))
         connection.execute(text("ALTER TABLE gateways ADD COLUMN IF NOT EXISTS max_devices INTEGER DEFAULT 200"))
         connection.execute(text("ALTER TABLE gateways ADD COLUMN IF NOT EXISTS device_code_prefix VARCHAR(80)"))
+        # Uzaktan yonetim icin control_host / control_port kolonlari.
+        connection.execute(
+            text("ALTER TABLE gateways ADD COLUMN IF NOT EXISTS control_host VARCHAR(255) NOT NULL DEFAULT '127.0.0.1'")
+        )
+        connection.execute(
+            text("ALTER TABLE gateways ADD COLUMN IF NOT EXISTS control_port INTEGER NOT NULL DEFAULT 0")
+        )
         connection.execute(text("ALTER TABLE devices ADD COLUMN IF NOT EXISTS description VARCHAR(500)"))
         connection.execute(text("ALTER TABLE devices ADD COLUMN IF NOT EXISTS gateway_code VARCHAR(50)"))
         connection.execute(text("ALTER TABLE devices ADD COLUMN IF NOT EXISTS dnp3_address INTEGER DEFAULT 1"))
@@ -104,4 +117,99 @@ def create_tables():
                 "is_active BOOLEAN NOT NULL DEFAULT TRUE)"
             )
         )
-    bootstrap_consumers(event_bus)
+        connection.execute(
+            text(
+                "CREATE TABLE IF NOT EXISTS outbox_events ("
+                "id SERIAL PRIMARY KEY, "
+                "topic VARCHAR(120) NOT NULL, "
+                "dedup_key VARCHAR(120) UNIQUE NOT NULL, "
+                "payload_json TEXT NOT NULL, "
+                "published BOOLEAN NOT NULL DEFAULT FALSE, "
+                "created_at TIMESTAMPTZ NOT NULL, "
+                "published_at TIMESTAMPTZ)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE TABLE IF NOT EXISTS processed_messages ("
+                "id SERIAL PRIMARY KEY, "
+                "consumer_name VARCHAR(80) NOT NULL, "
+                "message_id VARCHAR(120) NOT NULL, "
+                "processed_at TIMESTAMPTZ NOT NULL)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE UNIQUE INDEX IF NOT EXISTS uq_processed_message_consumer_msg "
+                "ON processed_messages (consumer_name, message_id)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE TABLE IF NOT EXISTS signal_catalog ("
+                "id SERIAL PRIMARY KEY, "
+                "key VARCHAR(120) UNIQUE NOT NULL, "
+                "label VARCHAR(200) NOT NULL, "
+                "unit VARCHAR(40), "
+                "description VARCHAR(500), "
+                "source VARCHAR(20) NOT NULL DEFAULT 'master', "
+                "dnp3_class VARCHAR(20) NOT NULL DEFAULT 'Class 1', "
+                "data_type VARCHAR(20) NOT NULL DEFAULT 'analog', "
+                "dnp3_object_group INTEGER NOT NULL DEFAULT 30, "
+                "dnp3_index INTEGER NOT NULL DEFAULT 0, "
+                "scale DOUBLE PRECISION NOT NULL DEFAULT 1.0, "
+                "\"offset\" DOUBLE PRECISION NOT NULL DEFAULT 0.0, "
+                "supports_alarm BOOLEAN NOT NULL DEFAULT FALSE, "
+                "is_active BOOLEAN NOT NULL DEFAULT TRUE, "
+                "display_order INTEGER NOT NULL DEFAULT 0)"
+            )
+        )
+        # Horstmann SN2 sinyal setine gecis icin gerekli kolon/uzunluk guncellemeleri.
+        connection.execute(text("ALTER TABLE signal_catalog ALTER COLUMN key TYPE VARCHAR(120)"))
+        connection.execute(text("ALTER TABLE signal_catalog ALTER COLUMN label TYPE VARCHAR(200)"))
+        connection.execute(
+            text("ALTER TABLE signal_catalog ADD COLUMN IF NOT EXISTS source VARCHAR(20) NOT NULL DEFAULT 'master'")
+        )
+        connection.execute(
+            text("ALTER TABLE signal_catalog ADD COLUMN IF NOT EXISTS dnp3_class VARCHAR(20) NOT NULL DEFAULT 'Class 1'")
+        )
+        connection.execute(
+            text("CREATE INDEX IF NOT EXISTS idx_signal_catalog_source ON signal_catalog (source)")
+        )
+        connection.execute(
+            text("CREATE INDEX IF NOT EXISTS idx_signal_catalog_data_type ON signal_catalog (data_type)")
+        )
+        connection.execute(
+            text(
+                "CREATE TABLE IF NOT EXISTS alarm_rules ("
+                "id SERIAL PRIMARY KEY, "
+                "signal_key VARCHAR(80) NOT NULL, "
+                "name VARCHAR(160) NOT NULL, "
+                "description VARCHAR(500), "
+                "level VARCHAR(20) NOT NULL DEFAULT 'warning', "
+                "comparator VARCHAR(20) NOT NULL DEFAULT 'gt', "
+                "threshold DOUBLE PRECISION NOT NULL DEFAULT 0.0, "
+                "threshold_high DOUBLE PRECISION, "
+                "hysteresis DOUBLE PRECISION NOT NULL DEFAULT 0.0, "
+                "debounce_sec INTEGER NOT NULL DEFAULT 0, "
+                "device_code_filter VARCHAR(500), "
+                "is_active BOOLEAN NOT NULL DEFAULT TRUE)"
+            )
+        )
+        connection.execute(
+            text("CREATE INDEX IF NOT EXISTS idx_alarm_rules_signal_key ON alarm_rules (signal_key)")
+        )
+    db = SessionLocal()
+    try:
+        result = seed_default_signals(db)
+        if not result.get("skipped"):
+            import logging
+
+            logging.getLogger(__name__).info(
+                "signal_catalog seed upsert -> inserted=%d updated=%d",
+                result.get("inserted", 0),
+                result.get("updated", 0),
+            )
+        flush_outbox(db)
+    finally:
+        db.close()

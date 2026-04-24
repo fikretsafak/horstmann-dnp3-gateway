@@ -2,7 +2,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.api.deps import require_roles
+from app.api.deps import require_role
 from app.db.session import get_db
 from app.models.enums import UserRole
 from app.models.outbound_target import OutboundTarget
@@ -14,7 +14,7 @@ router = APIRouter(prefix="/outbound-targets", tags=["outbound-targets"])
 
 @router.get("", response_model=list[OutboundTargetRead])
 def list_outbound_targets(
-    _: User = Depends(require_roles([UserRole.ENGINEER, UserRole.INSTALLER])),
+    _: User = Depends(require_role(UserRole.INSTALLER)),
     db: Session = Depends(get_db),
 ):
     stmt = select(OutboundTarget).order_by(OutboundTarget.name.asc())
@@ -24,7 +24,7 @@ def list_outbound_targets(
 @router.post("", response_model=OutboundTargetRead, status_code=status.HTTP_201_CREATED)
 def create_outbound_target(
     payload: OutboundTargetCreate,
-    _: User = Depends(require_roles([UserRole.ENGINEER, UserRole.INSTALLER])),
+    _: User = Depends(require_role(UserRole.INSTALLER)),
     db: Session = Depends(get_db),
 ):
     existing = db.scalar(select(OutboundTarget).where(OutboundTarget.name == payload.name))
@@ -41,7 +41,7 @@ def create_outbound_target(
 def update_outbound_target(
     target_id: int,
     payload: OutboundTargetUpdate,
-    _: User = Depends(require_roles([UserRole.ENGINEER, UserRole.INSTALLER])),
+    _: User = Depends(require_role(UserRole.INSTALLER)),
     db: Session = Depends(get_db),
 ):
     row = db.get(OutboundTarget, target_id)
@@ -58,7 +58,7 @@ def update_outbound_target(
 @router.delete("/{target_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_outbound_target(
     target_id: int,
-    _: User = Depends(require_roles([UserRole.ENGINEER, UserRole.INSTALLER])),
+    _: User = Depends(require_role(UserRole.INSTALLER)),
     db: Session = Depends(get_db),
 ):
     row = db.get(OutboundTarget, target_id)

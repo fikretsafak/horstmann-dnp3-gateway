@@ -1746,3 +1746,146 @@ body {
     grid-template-columns: 1fr;
   }
 }
+
+/* Sinyaller ve Alarm Kurallari sayfalari */
+.subtabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+  padding: 4px;
+  background: #f3f4f6;
+  border-radius: 8px;
+  width: fit-content;
+}
+.subtabs button {
+  padding: 6px 14px;
+  border: none;
+  background: transparent;
+  border-radius: 6px;
+  cursor: pointer;
+  color: #374151;
+  font-size: 13px;
+}
+.subtabs button.active {
+  background: #ffffff;
+  color: #111827;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+  font-weight: 600;
+}
+.signals-layout .device-management-right {
+  max-width: none;
+}
+.signals-detail {
+  min-width: 320px;
+}
+.checkbox-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-direction: row !important;
+}
+.checkbox-row input[type="checkbox"] {
+  width: auto !important;
+  margin: 0;
+}
+.badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  background: #e5e7eb;
+  color: #374151;
+  margin-left: 6px;
+}
+.badge.badge-analog {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+.badge.badge-analog_output {
+  background: #c7d2fe;
+  color: #3730a3;
+}
+.badge.badge-binary {
+  background: #fde68a;
+  color: #92400e;
+}
+.badge.badge-binary_output {
+  background: #fecaca;
+  color: #991b1b;
+}
+.badge.badge-counter {
+  background: #d1fae5;
+  color: #065f46;
+}
+.badge.badge-string {
+  background: #e9d5ff;
+  color: #6b21a8;
+}
+.badge.badge-source {
+  margin-left: 4px;
+  letter-spacing: 0.02em;
+}
+.badge.badge-source-master {
+  background: #0ea5e9;
+  color: #ffffff;
+}
+.badge.badge-source-sat01 {
+  background: #22c55e;
+  color: #ffffff;
+}
+.badge.badge-source-sat02 {
+  background: #f97316;
+  color: #ffffff;
+}
+.signals-filter-bar {
+  display: grid;
+  grid-template-columns: 1fr 140px 140px auto;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.signals-filter-bar input[type="search"],
+.signals-filter-bar select {
+  padding: 6px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 6px;
+  font-size: 13px;
+  background: #ffffff;
+}
+.signals-filter-bar .helper-text {
+  text-align: right;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.badge.level-info {
+  background: #dbeafe;
+  color: #1d4ed8;
+}
+.badge.level-warning {
+  background: #fef3c7;
+  color: #92400e;
+}
+.badge.level-critical {
+  background: #fee2e2;
+  color: #991b1b;
+}
+.alarm-rules-panel .section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.alarm-rules-panel .values-table-wrap,
+.signals-panel .live-values-table-wrap {
+  overflow-x: auto;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #ffffff;
+}
+.alarm-rules-panel .action-btn {
+  padding: 4px 10px;
+  font-size: 12px;
+}

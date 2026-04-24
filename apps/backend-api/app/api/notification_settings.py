@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.api.deps import require_roles
+from app.api.deps import require_role
 from app.db.session import get_db
 from app.models.enums import UserRole
 from app.models.user import User
@@ -21,7 +21,7 @@ router = APIRouter(prefix="/notification-settings", tags=["notification-settings
 
 @router.get("", response_model=NotificationSettingsRead)
 def get_notification_settings(
-    _: User = Depends(require_roles([UserRole.ENGINEER, UserRole.INSTALLER])),
+    _: User = Depends(require_role(UserRole.INSTALLER)),
     db: Session = Depends(get_db),
 ):
     return get_or_create_notification_settings(db)
@@ -30,7 +30,7 @@ def get_notification_settings(
 @router.put("", response_model=NotificationSettingsRead)
 def update_notification_settings(
     payload: NotificationSettingsUpdate,
-    current_user: User = Depends(require_roles([UserRole.ENGINEER, UserRole.INSTALLER])),
+    current_user: User = Depends(require_role(UserRole.INSTALLER)),
     db: Session = Depends(get_db),
 ):
     settings_row = get_or_create_notification_settings(db)
@@ -60,7 +60,7 @@ def update_notification_settings(
 @router.post("/test-smtp", response_model=NotificationTestResult)
 def test_smtp_settings(
     payload: NotificationSmtpTestRequest,
-    current_user: User = Depends(require_roles([UserRole.ENGINEER, UserRole.INSTALLER])),
+    current_user: User = Depends(require_role(UserRole.INSTALLER)),
     db: Session = Depends(get_db),
 ):
     settings_row = get_or_create_notification_settings(db)
@@ -99,7 +99,7 @@ def test_smtp_settings(
 @router.post("/test-sms", response_model=NotificationTestResult)
 def test_sms_settings(
     payload: NotificationSmsTestRequest,
-    current_user: User = Depends(require_roles([UserRole.ENGINEER, UserRole.INSTALLER])),
+    current_user: User = Depends(require_role(UserRole.INSTALLER)),
     db: Session = Depends(get_db),
 ):
     settings_row = get_or_create_notification_settings(db)

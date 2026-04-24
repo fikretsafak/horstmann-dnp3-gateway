@@ -1,9 +1,15 @@
 from datetime import datetime
 
+from uuid import uuid4
+
 from pydantic import BaseModel
+from pydantic import Field
 
 
 class TelemetryIn(BaseModel):
+    message_id: str = Field(default_factory=lambda: str(uuid4()))
+    correlation_id: str | None = None
+    source_gateway: str | None = None
     device_code: str
     signal_key: str
     value: float

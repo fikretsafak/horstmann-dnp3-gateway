@@ -10,17 +10,24 @@ import { NotificationSettingsPanel } from "../features/settings/NotificationSett
 import { DeviceSidebar } from "../features/devices/DeviceSidebar";
 import { LiveValuesTab } from "../features/live-values/LiveValuesTab";
 import { DeviceMapTab } from "../features/map/DeviceMapTab";
+import { SignalsPage } from "../features/signals/SignalsPage";
+import { AlarmRulesPage } from "../features/alarm-rules/AlarmRulesPage";
 import {
   changeMyPassword,
   clearSession,
+  createAlarmRule,
   createGateway,
   createDevice,
+  createSignal,
   createUser,
+  deleteAlarmRule,
   deleteDevice,
   deleteGateway,
+  deleteSignal,
   deleteUser,
   fetchAlarmComments,
   fetchAlarmEvents,
+  fetchAlarmRules,
   fetchDevices,
   fetchGateways,
   fetchSystemEvents,
@@ -28,6 +35,8 @@ import {
   fetchMe,
   fetchNotificationSettings,
   fetchOutboundTargets,
+  fetchSignals,
+  fetchSignalLiveValues,
   fetchUsers,
   loadSession,
   login,
@@ -40,9 +49,11 @@ import {
   assignAlarm,
   resetAlarm,
   resetAllAlarms,
+  updateAlarmRule,
   updateGateway,
   updateOutboundTarget,
   updateDevice,
+  updateSignal,
   createOutboundTarget,
   deleteOutboundTarget,
   testNotificationSms,
@@ -54,19 +65,23 @@ import {
 import type {
   AlarmComment,
   AlarmEvent,
+  AlarmRuleRow,
   AuthSession,
   DeviceRow,
   Gateway,
   LiveValue,
   NotificationSettings,
   OutboundTarget,
+  SignalCatalogRow,
+  SignalLiveRow,
   SystemEvent,
-  UserRead
+  UserRead,
+  UserRole
 } from "../shared/types";
 
 type TabId = "map" | "values";
 type PageMode = "home" | "alarms" | "events" | "engineering";
-type EngineeringPage = "devices" | "users" | "outbound" | "notifications";
+type EngineeringPage = "devices" | "signals" | "alarm-rules" | "users" | "outbound" | "notifications";
 
 export function App() {
   const [session, setSession] = useState<AuthSession | null>(() => loadSession());
@@ -98,6 +113,14 @@ export function App() {
   const [notificationSettingsLoading, setNotificationSettingsLoading] = useState(false);
   const [notificationSettingsSaving, setNotificationSettingsSaving] = useState(false);
   const [notificationSettingsError, setNotificationSettingsError] = useState("");
+  const [signalCatalog, setSignalCatalog] = useState<SignalCatalogRow[]>([]);
+  const [signalLiveValues, setSignalLiveValues] = useState<SignalLiveRow[]>([]);
+  const [signalLoading, setSignalLoading] = useState(false);
+  const [signalLiveLoading, setSignalLiveLoading] = useState(false);
+  const [signalError, setSignalError] = useState("");
+  const [alarmRules, setAlarmRules] = useState<AlarmRuleRow[]>([]);
+  const [alarmRulesLoading, setAlarmRulesLoading] = useState(false);
+  const [alarmRulesError, setAlarmRulesError] = useState("");
 
   useEffect(() => {
     const load = async () => {
@@ -119,9 +142,13 @@ export function App() {
         setAlarms(alarmRows);
         const eventRows = await fetchSystemEvents(session.accessToken);
         setEvents(eventRows);
-        if (session.role === "engineer") {
+        if (session.role === "engineer" || session.role === "installer") {
           const gatewayRows = await fetchGateways(session.accessToken);
           setGateways(gatewayRows);
+        } else {
+          setGateways([]);
+        }
+        if (session.role === "installer") {
           const allUsers = await fetchUsers(session.accessToken);
           setUsers(allUsers);
           const outboundRows = await fetchOutboundTargets(session.accessToken);
@@ -129,10 +156,21 @@ export function App() {
           const notificationRows = await fetchNotificationSettings(session.accessToken);
           setNotificationSettings(notificationRows);
         } else {
-          setGateways([]);
           setUsers([]);
           setOutboundTargets([]);
           setNotificationSettings(null);
+        }
+        try {
+          const signalsRows = await fetchSignals(session.accessToken);
+          setSignalCatalog(signalsRows);
+        } catch {
+          setSignalCatalog([]);
+        }
+        try {
+          const ruleRows = await fetchAlarmRules(session.accessToken);
+          setAlarmRules(ruleRows);
+        } catch {
+          setAlarmRules([]);
         }
       } catch {
         setAuthError("Oturum geçersiz veya API erişilemiyor.");
@@ -146,7 +184,8 @@ export function App() {
 
   useEffect(() => {
     if (!session) return;
-    if (session.role !== "engineer" && pageMode === "engineering") {
+    const canAccessEngineering = session.role === "engineer" || session.role === "installer";
+    if (!canAccessEngineering && pageMode === "engineering") {
       setPageMode("home");
       setEngineeringPage("devices");
     }
@@ -184,12 +223,98 @@ export function App() {
     setDevicesByGateway([]);
     setOutboundTargets([]);
     setNotificationSettings(null);
+    setSignalCatalog([]);
+    setSignalLiveValues([]);
+    setAlarmRules([]);
     setEngineeringPage("devices");
     setPageMode("home");
   };
 
+  const reloadSignals = async () => {
+    if (!session) return;
+    setSignalLoading(true);
+    setSignalError("");
+    try {
+      const rows = await fetchSignals(session.accessToken);
+      setSignalCatalog(rows);
+    } catch (err) {
+      setSignalError(err instanceof Error ? err.message : "Sinyal listesi alınamadı.");
+    } finally {
+      setSignalLoading(false);
+    }
+  };
+
+  const handleCreateSignal = async (payload: Omit<SignalCatalogRow, "id">) => {
+    if (!session) return;
+    await createSignal(session.accessToken, payload);
+    await reloadSignals();
+  };
+
+  const handleUpdateSignal = async (
+    signalKey: string,
+    payload: Partial<Omit<SignalCatalogRow, "id" | "key">>
+  ) => {
+    if (!session) return;
+    await updateSignal(session.accessToken, signalKey, payload);
+    await reloadSignals();
+  };
+
+  const handleDeleteSignal = async (signalKey: string) => {
+    if (!session) return;
+    await deleteSignal(session.accessToken, signalKey);
+    await reloadSignals();
+  };
+
+  const handleRefreshSignalLive = async () => {
+    if (!session) return;
+    setSignalLiveLoading(true);
+    try {
+      const rows = await fetchSignalLiveValues(session.accessToken);
+      setSignalLiveValues(rows);
+    } catch {
+      setSignalLiveValues([]);
+    } finally {
+      setSignalLiveLoading(false);
+    }
+  };
+
+  const reloadAlarmRules = async () => {
+    if (!session) return;
+    setAlarmRulesLoading(true);
+    setAlarmRulesError("");
+    try {
+      const rows = await fetchAlarmRules(session.accessToken);
+      setAlarmRules(rows);
+    } catch (err) {
+      setAlarmRulesError(err instanceof Error ? err.message : "Alarm kuralları alınamadı.");
+    } finally {
+      setAlarmRulesLoading(false);
+    }
+  };
+
+  const handleCreateAlarmRule = async (payload: Omit<AlarmRuleRow, "id">) => {
+    if (!session) return;
+    await createAlarmRule(session.accessToken, payload);
+    await reloadAlarmRules();
+  };
+
+  const handleUpdateAlarmRule = async (
+    ruleId: number,
+    payload: Partial<Omit<AlarmRuleRow, "id" | "signal_key">>
+  ) => {
+    if (!session) return;
+    await updateAlarmRule(session.accessToken, ruleId, payload);
+    await reloadAlarmRules();
+  };
+
+  const handleDeleteAlarmRule = async (ruleId: number) => {
+    if (!session) return;
+    await deleteAlarmRule(session.accessToken, ruleId);
+    await reloadAlarmRules();
+  };
+
   const reloadUsers = async () => {
-    if (!session || session.role !== "engineer") return;
+    if (!session || session.role !== "installer") return;
     const allUsers = await fetchUsers(session.accessToken);
     setUsers(allUsers);
   };
@@ -200,7 +325,7 @@ export function App() {
     phone_number?: string | null;
     full_name: string;
     password: string;
-    role: "operator" | "engineer";
+    role: UserRole;
   }) => {
     if (!session) return;
     await createUser(session.accessToken, payload);
@@ -215,7 +340,7 @@ export function App() {
 
   const handleUpdateUser = async (
     userId: number,
-    payload: { email: string; phone_number?: string | null; full_name: string; role: "operator" | "engineer" }
+    payload: { email: string; phone_number?: string | null; full_name: string; role: UserRole }
   ) => {
     if (!session) return;
     await updateUser(session.accessToken, userId, payload);
@@ -268,7 +393,8 @@ export function App() {
   };
 
   const reloadGateways = async () => {
-    if (!session || session.role !== "engineer") return;
+    if (!session) return;
+    if (session.role !== "engineer" && session.role !== "installer") return;
     const rows = await fetchGateways(session.accessToken);
     setGateways(rows);
   };
@@ -284,6 +410,8 @@ export function App() {
     device_code_prefix?: string | null;
     token: string;
     is_active: boolean;
+    control_host: string;
+    control_port: number;
   }) => {
     if (!session) return;
     await createGateway(session.accessToken, payload);
@@ -373,7 +501,7 @@ export function App() {
   };
 
   const reloadOutboundTargets = async () => {
-    if (!session || session.role !== "engineer") return;
+    if (!session || session.role !== "installer") return;
     const rows = await fetchOutboundTargets(session.accessToken);
     setOutboundTargets(rows);
   };
@@ -420,7 +548,7 @@ export function App() {
   };
 
   const reloadNotificationSettings = async () => {
-    if (!session || session.role !== "engineer") return;
+    if (!session || session.role !== "installer") return;
     setNotificationSettingsLoading(true);
     setNotificationSettingsError("");
     try {
@@ -532,31 +660,56 @@ export function App() {
               >
                 Cihazlar
               </button>
-              <button
-                className={engineeringPage === "users" ? "active" : ""}
-                onClick={() => setEngineeringPage("users")}
-              >
-                Kullanıcılar
-              </button>
-              <button
-                className={engineeringPage === "outbound" ? "active" : ""}
-                onClick={() => setEngineeringPage("outbound")}
-              >
-                Outbound
-              </button>
-              <button
-                className={engineeringPage === "notifications" ? "active" : ""}
-                onClick={() => {
-                  setEngineeringPage("notifications");
-                  void reloadNotificationSettings();
-                }}
-              >
-                Bildirim Ayarları
-              </button>
+              {session.role === "installer" ? (
+                <>
+                  <button
+                    className={engineeringPage === "signals" ? "active" : ""}
+                    onClick={() => {
+                      setEngineeringPage("signals");
+                      void reloadSignals();
+                    }}
+                  >
+                    Sinyaller
+                  </button>
+                  <button
+                    className={engineeringPage === "alarm-rules" ? "active" : ""}
+                    onClick={() => {
+                      setEngineeringPage("alarm-rules");
+                      void reloadAlarmRules();
+                      void reloadSignals();
+                    }}
+                  >
+                    Alarm Yönetimi
+                  </button>
+                  <button
+                    className={engineeringPage === "users" ? "active" : ""}
+                    onClick={() => setEngineeringPage("users")}
+                  >
+                    Kullanıcılar
+                  </button>
+                  <button
+                    className={engineeringPage === "outbound" ? "active" : ""}
+                    onClick={() => setEngineeringPage("outbound")}
+                  >
+                    Outbound
+                  </button>
+                  <button
+                    className={engineeringPage === "notifications" ? "active" : ""}
+                    onClick={() => {
+                      setEngineeringPage("notifications");
+                      void reloadNotificationSettings();
+                    }}
+                  >
+                    Bildirim Ayarları
+                  </button>
+                </>
+              ) : null}
             </div>
 
-            {engineeringPage === "devices" ? (
+            {engineeringPage === "devices" &&
+            (session.role === "engineer" || session.role === "installer") ? (
               <DeviceManagementPanel
+                role={session.role}
                 gateways={gateways}
                 devices={devicesByGateway}
                 onSelectGateway={handleSelectGatewayForDevices}
@@ -568,16 +721,51 @@ export function App() {
                 onDelete={handleDeleteDevice}
               />
             ) : null}
-            {engineeringPage === "users" && session.role !== "operator" ? (
+            {engineeringPage === "devices" &&
+            session.role !== "engineer" &&
+            session.role !== "installer" ? (
+              <p className="helper-text">
+                Cihaz yönetimi yalnızca <strong>mühendis</strong> veya <strong>kurulumcu</strong> rolü ile
+                görüntülenebilir.
+              </p>
+            ) : null}
+            {engineeringPage === "signals" && session.role === "installer" ? (
+              <SignalsPage
+                role={session.role}
+                signals={signalCatalog}
+                liveValues={signalLiveValues}
+                loading={signalLoading}
+                liveLoading={signalLiveLoading}
+                error={signalError}
+                onCreate={handleCreateSignal}
+                onUpdate={handleUpdateSignal}
+                onDelete={handleDeleteSignal}
+                onRefreshLive={handleRefreshSignalLive}
+              />
+            ) : null}
+            {engineeringPage === "alarm-rules" && session.role === "installer" ? (
+              <AlarmRulesPage
+                role={session.role}
+                rules={alarmRules}
+                signals={signalCatalog}
+                loading={alarmRulesLoading}
+                error={alarmRulesError}
+                onCreate={handleCreateAlarmRule}
+                onUpdate={handleUpdateAlarmRule}
+                onDelete={handleDeleteAlarmRule}
+              />
+            ) : null}
+            {engineeringPage === "users" && session.role === "installer" ? (
               <UserManagementPanel
                 users={users}
+                currentUserId={currentUser?.id}
                 onCreate={handleCreateUser}
                 onDelete={handleDeleteUser}
                 onUpdate={handleUpdateUser}
                 onResetPassword={handleResetUserPassword}
               />
             ) : null}
-            {engineeringPage === "outbound" && session.role !== "operator" ? (
+            {engineeringPage === "outbound" && session.role === "installer" ? (
               <OutboundTargetsPanel
                 targets={outboundTargets}
                 onCreate={handleCreateOutboundTarget}
@@ -585,7 +773,7 @@ export function App() {
                 onDelete={handleDeleteOutboundTarget}
               />
             ) : null}
-            {engineeringPage === "notifications" && session.role !== "operator" ? (
+            {engineeringPage === "notifications" && session.role === "installer" ? (
               <NotificationSettingsPanel
                 initialSettings={notificationSettings}
                 loading={notificationSettingsLoading}

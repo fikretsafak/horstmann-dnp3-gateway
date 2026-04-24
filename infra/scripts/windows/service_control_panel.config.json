@@ -30,61 +30,65 @@
         "8000"
       ],
       "env": {
-        "EVENT_BUS_BACKEND": "rabbitmq",
-        "SERVICE_ROLE": "api"
+        "SERVICE_NAME": "backend-api",
+        "INTERNAL_SERVICE_TOKEN": "change-me-internal-token"
       },
       "health_host": "127.0.0.1",
       "health_port": 8000
     },
     {
-      "name": "Tag Engine Worker",
+      "name": "Tag Engine Service",
       "type": "process",
-      "working_dir": "C:/Users/fikret.safak/OneDrive - Form Elektrik Ins.Muh.A.S/Belgeler/SoftwareFormElektrik/Horstman Smart Logger/apps/backend-api",
+      "working_dir": "C:/Users/fikret.safak/OneDrive - Form Elektrik Ins.Muh.A.S/Belgeler/SoftwareFormElektrik/Horstman Smart Logger/apps/tag-engine",
       "command": [
         "py",
         "-3.10",
         "-m",
-        "app.workers.run_worker"
+        "tag_engine.main"
       ],
       "env": {
-        "EVENT_BUS_BACKEND": "rabbitmq",
-        "SERVICE_ROLE": "tag",
+        "RABBITMQ_URL": "amqp://guest:guest@localhost:5672/",
+        "RABBITMQ_EXCHANGE": "hsl.events",
         "WORKER_HEALTH_PORT": "8011"
       },
       "health_host": "127.0.0.1",
       "health_port": 8011
     },
     {
-      "name": "Alarm Worker",
+      "name": "Alarm Service",
       "type": "process",
-      "working_dir": "C:/Users/fikret.safak/OneDrive - Form Elektrik Ins.Muh.A.S/Belgeler/SoftwareFormElektrik/Horstman Smart Logger/apps/backend-api",
+      "working_dir": "C:/Users/fikret.safak/OneDrive - Form Elektrik Ins.Muh.A.S/Belgeler/SoftwareFormElektrik/Horstman Smart Logger/apps/alarm-service",
       "command": [
         "py",
         "-3.10",
         "-m",
-        "app.workers.run_worker"
+        "alarm_service.main"
       ],
       "env": {
-        "EVENT_BUS_BACKEND": "rabbitmq",
-        "SERVICE_ROLE": "alarm",
+        "RABBITMQ_URL": "amqp://guest:guest@localhost:5672/",
+        "RABBITMQ_EXCHANGE": "hsl.events",
+        "BACKEND_API_BASE": "http://127.0.0.1:8000/api/v1",
+        "BACKEND_INTERNAL_ALARM_URL": "http://127.0.0.1:8000/api/v1/internal/alarms",
+        "INTERNAL_SERVICE_TOKEN": "change-me-internal-token",
+        "ALARM_RULES_REFRESH_SEC": "30",
         "WORKER_HEALTH_PORT": "8012"
       },
       "health_host": "127.0.0.1",
       "health_port": 8012
     },
     {
-      "name": "Outbound Worker",
+      "name": "Notification Service",
       "type": "process",
-      "working_dir": "C:/Users/fikret.safak/OneDrive - Form Elektrik Ins.Muh.A.S/Belgeler/SoftwareFormElektrik/Horstman Smart Logger/apps/backend-api",
+      "working_dir": "C:/Users/fikret.safak/OneDrive - Form Elektrik Ins.Muh.A.S/Belgeler/SoftwareFormElektrik/Horstman Smart Logger/apps/notification-worker",
       "command": [
         "py",
         "-3.10",
         "-m",
-        "app.workers.run_worker"
+        "notification_service.main"
       ],
       "env": {
-        "EVENT_BUS_BACKEND": "rabbitmq",
-        "SERVICE_ROLE": "outbound",
+        "RABBITMQ_URL": "amqp://guest:guest@localhost:5672/",
+        "RABBITMQ_EXCHANGE": "hsl.events",
         "WORKER_HEALTH_PORT": "8013"
       },
       "health_host": "127.0.0.1",
@@ -107,5 +111,11 @@
       "health_host": "127.0.0.1",
       "health_port": 5173
     }
-  ]
+  ],
+  "gateways": [],
+  "backend": {
+    "base_url": "http://127.0.0.1:8000/api/v1",
+    "installer_email": "installer@horstman.local",
+    "installer_password": "installer123"
+  }
 }

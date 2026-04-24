@@ -1,7 +1,7 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_current_user, require_role
+from app.api.deps import get_current_user, require_roles
 from app.db.session import get_db
 from app.models.enums import UserRole
 from app.models.user import User
@@ -26,7 +26,7 @@ def list_devices(
 @router.post("", response_model=DeviceRead, status_code=status.HTTP_201_CREATED)
 def create_device(
     payload: DeviceCreate,
-    _: User = Depends(require_role(UserRole.ENGINEER)),
+    _: User = Depends(require_roles([UserRole.ENGINEER, UserRole.INSTALLER])),
     db: Session = Depends(get_db),
 ):
     repository = DeviceRepository(db)
@@ -40,7 +40,7 @@ def create_device(
 def update_device(
     device_code: str,
     payload: DeviceUpdate,
-    _: User = Depends(require_role(UserRole.ENGINEER)),
+    _: User = Depends(require_roles([UserRole.ENGINEER, UserRole.INSTALLER])),
     db: Session = Depends(get_db),
 ):
     repository = DeviceRepository(db)
@@ -53,7 +53,7 @@ def update_device(
 @router.delete("/{device_code}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_device(
     device_code: str,
-    _: User = Depends(require_role(UserRole.ENGINEER)),
+    _: User = Depends(require_roles([UserRole.ENGINEER, UserRole.INSTALLER])),
     db: Session = Depends(get_db),
 ):
     repository = DeviceRepository(db)

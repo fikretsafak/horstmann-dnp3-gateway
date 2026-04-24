@@ -32,6 +32,8 @@ def process_telemetry_reading(device: Device, reading: TelemetryIn) -> tuple[Tel
     device.last_update_at = datetime.now(timezone.utc)
 
     event_payload = {
+        "message_id": reading.message_id,
+        "correlation_id": reading.correlation_id or reading.message_id,
         "device_id": device.id,
         "device_code": device.code,
         "device_name": device.name,

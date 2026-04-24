@@ -15,6 +15,8 @@ type Props = {
     device_code_prefix?: string | null;
     token: string;
     is_active: boolean;
+    control_host: string;
+    control_port: number;
   }) => Promise<void>;
   onToggleActive: (gatewayCode: string, isActive: boolean) => Promise<void>;
   onDelete: (gatewayCode: string) => Promise<void>;
@@ -31,6 +33,8 @@ export function GatewayManagementPanel({ gateways, onCreate, onToggleActive, onD
   const [maxDevices, setMaxDevices] = useState("200");
   const [deviceCodePrefix, setDeviceCodePrefix] = useState("");
   const [token, setToken] = useState("");
+  const [controlHost, setControlHost] = useState("127.0.0.1");
+  const [controlPort, setControlPort] = useState("8020");
   const [error, setError] = useState("");
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -47,7 +51,9 @@ export function GatewayManagementPanel({ gateways, onCreate, onToggleActive, onD
         max_devices: Number(maxDevices),
         device_code_prefix: deviceCodePrefix.trim() || null,
         token,
-        is_active: true
+        is_active: true,
+        control_host: controlHost.trim() || "127.0.0.1",
+        control_port: Number(controlPort) || 0
       });
       setShowCreateModal(false);
       setCode("");
@@ -59,6 +65,8 @@ export function GatewayManagementPanel({ gateways, onCreate, onToggleActive, onD
       setMaxDevices("200");
       setDeviceCodePrefix("");
       setToken("");
+      setControlHost("127.0.0.1");
+      setControlPort("8020");
     } catch (err) {
       setError(err instanceof Error ? err.message : "Gateway oluşturulamadı.");
     }
@@ -81,6 +89,9 @@ export function GatewayManagementPanel({ gateways, onCreate, onToggleActive, onD
       <div className="gateway-endpoint">
         DNP3 connector ingest endpoint: <code>/api/v1/telemetry/gateway/{"{gateway_code}"}</code> (Header:{" "}
         <code>X-Gateway-Token</code>)
+        <br />
+        Kontrol paneli bu tablodaki <code>Kontrol Adresi</code> alanını kullanarak uzaktaki collector servislerini
+        izler ve <em>Aktifleştir/Pasifleştir</em> komutlarını yayınlar.
       </div>
 
       <table className="values-table">
@@ -88,8 +99,8 @@ export function GatewayManagementPanel({ gateways, onCreate, onToggleActive, onD
           <tr>
             <th>Kod</th>
             <th>Ad</th>
-            <th>Host</th>
-            <th>Port</th>
+            <th>DNP3 Host:Port</th>
+            <th>Kontrol Adresi</th>
             <th>Kapsam</th>
             <th>Maks. Cihaz</th>
             <th>Batch (sn)</th>
@@ -103,8 +114,13 @@ export function GatewayManagementPanel({ gateways, onCreate, onToggleActive, onD
             <tr key={gateway.id}>
               <td>{gateway.code}</td>
               <td>{gateway.name}</td>
-              <td>{gateway.host}</td>
-              <td>{gateway.listen_port}</td>
+              <td>
+                {gateway.host}:{gateway.listen_port}
+              </td>
+              <td>
+                {gateway.control_host || "127.0.0.1"}
+                {gateway.control_port ? `:${gateway.control_port}` : " (—)"}
+              </td>
               <td>{gateway.device_code_prefix ? `${gateway.device_code_prefix}*` : "Tümü"}</td>
               <td>{gateway.max_devices}</td>
               <td>{gateway.batch_interval_sec}</td>
@@ -190,6 +206,24 @@ export function GatewayManagementPanel({ gateways, onCreate, onToggleActive, onD
             <label>
               Gateway Token
               <input value={token} onChange={(event) => setToken(event.target.value)} required />
+            </label>
+            <label>
+              Kontrol Host (Uzak Makina)
+              <input
+                placeholder="10.10.10.30"
+                value={controlHost}
+                onChange={(event) => setControlHost(event.target.value)}
+              />
+            </label>
+            <label>
+              Kontrol Port (collector health/port)
+              <input
+                type="number"
+                min={0}
+                max={65535}
+                value={controlPort}
+                onChange={(event) => setControlPort(event.target.value)}
+              />
             </label>
             {error ? <p className="error-text">{error}</p> : null}
             <div className="modal-actions">

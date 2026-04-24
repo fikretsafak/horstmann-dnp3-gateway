@@ -13,6 +13,13 @@ class Settings(BaseSettings):
     event_bus_backend: str = "inprocess"
     rabbitmq_url: str = "amqp://guest:guest@localhost:5672/"
     rabbitmq_exchange: str = "hsl.events"
+    rabbitmq_prefetch_count: int = 20
+    rabbitmq_dlx_exchange: str = "hsl.events.dlx"
+    rabbitmq_queue_tag: str = "hsl.tag.telemetry.raw"
+    rabbitmq_queue_alarm: str = "hsl.alarm.telemetry.received"
+    rabbitmq_queue_outbound_alarm: str = "hsl.outbound.alarm.created"
+    rabbitmq_queue_outbound_telemetry: str = "hsl.outbound.telemetry.received"
+    internal_service_token: str = "change-me-internal-token"
     smtp_enabled: bool = False
     smtp_host: str = "localhost"
     smtp_port: int = 25
@@ -24,6 +31,7 @@ class Settings(BaseSettings):
     sms_api_url: str = ""
     sms_api_key: str = ""
     service_role: str = "api"
+    service_name: str = "backend-api"
     worker_health_host: str = "127.0.0.1"
     worker_health_port: int = 0
 

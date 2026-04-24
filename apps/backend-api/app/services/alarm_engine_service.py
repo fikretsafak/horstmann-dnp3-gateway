@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from fastapi import HTTPException, status
 from sqlalchemy import select
@@ -6,8 +7,8 @@ from sqlalchemy.orm import Session
 
 from app.models.alarm import AlarmComment, AlarmEvent
 from app.models.user import User
-from app.services.event_bus import event_bus
 from app.services.event_service import record_event
+from app.services.outbox_service import enqueue_outbox_event
 
 
 def list_alarm_events(db: Session) -> list[AlarmEvent]:
@@ -186,13 +187,18 @@ def handle_telemetry_alarm_event(db: Session, payload: dict) -> None:
         message=f"{device_name} için otomatik alarm üretildi",
         metadata={"signal_key": signal_key, "quality": quality},
     )
-    event_bus.publish_event(
-        "alarm.created",
-        {
-            "device_id": device_id,
-            "device_code": payload.get("device_code"),
-            "device_name": device_name,
-            "signal_key": signal_key,
-            "quality": quality,
-        },
+    alarm_event_payload = {
+        "message_id": str(uuid4()),
+        "correlation_id": payload.get("correlation_id") or payload.get("message_id"),
+        "device_id": device_id,
+        "device_code": payload.get("device_code"),
+        "device_name": device_name,
+        "signal_key": signal_key,
+        "quality": quality,
+    }
+    enqueue_outbox_event(
+        db,
+        topic="alarm.created",
+        payload=alarm_event_payload,
+        dedup_key=alarm_event_payload["message_id"],
     )

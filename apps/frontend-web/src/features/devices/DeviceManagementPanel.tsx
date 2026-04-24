@@ -4,6 +4,7 @@ import L from "leaflet";
 import type { DeviceRow, Gateway } from "../../shared/types";
 
 type Props = {
+  role: "operator" | "engineer" | "installer";
   gateways: Gateway[];
   devices: DeviceRow[];
   onSelectGateway: (gatewayCode: string) => Promise<void>;
@@ -57,6 +58,7 @@ type Props = {
 };
 
 export function DeviceManagementPanel({
+  role,
   gateways,
   devices,
   onSelectGateway,
@@ -67,6 +69,7 @@ export function DeviceManagementPanel({
   onUpdate,
   onDelete
 }: Props) {
+  const canManageGateways = role === "installer";
   const [selectedGatewayCode, setSelectedGatewayCode] = useState(gateways[0]?.code ?? "");
   const [selectedDeviceCode, setSelectedDeviceCode] = useState("");
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -329,11 +332,16 @@ export function DeviceManagementPanel({
       <div className="device-management-layout">
         <div className="device-management-left">
           <h4>Gatewayler</h4>
-          <div className="section-actions">
-            <button className="secondary-btn action-btn full-width-btn" onClick={() => setShowGatewayCreateModal(true)}>
-              Gateway Ekle
-            </button>
-          </div>
+          {canManageGateways ? (
+            <div className="section-actions">
+              <button
+                className="secondary-btn action-btn full-width-btn"
+                onClick={() => setShowGatewayCreateModal(true)}
+              >
+                Gateway Ekle
+              </button>
+            </div>
+          ) : null}
           <div className="device-group-list">
             {gateways.map((gateway) => (
               <div
@@ -348,36 +356,38 @@ export function DeviceManagementPanel({
                       </span>
                       <strong>{gateway.name}</strong>
                     </div>
-                    <div className="item-actions inline-actions">
-                      <button
-                        type="button"
-                        className="secondary-btn action-btn"
-                        onClick={() => handleStartGatewayEdit(gateway)}
-                        title="Gateway Düzenle"
-                        aria-label="Gateway Düzenle"
-                      >
-                        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-                          <path
-                            fill="currentColor"
-                            d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75zM20.71 7.04a1 1 0 0 0 0-1.41L18.37 3.29a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75z"
-                          />
-                        </svg>
-                      </button>
-                      <button
-                        type="button"
-                        className="danger-btn action-btn"
-                        onClick={() => void handleDeleteGateway(gateway.code)}
-                        title="Gateway Sil"
-                        aria-label="Gateway Sil"
-                      >
-                        <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
-                          <path
-                            fill="currentColor"
-                            d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6zm3.46-7.12 1.41-1.41L12 11.59l1.12-1.12 1.41 1.41L13.41 13l1.12 1.12-1.41 1.41L12 14.41l-1.12 1.12-1.41-1.41L10.59 13zM15.5 4l-1-1h-5l-1 1H5v2h14V4z"
-                          />
-                        </svg>
-                      </button>
-                    </div>
+                    {canManageGateways ? (
+                      <div className="item-actions inline-actions">
+                        <button
+                          type="button"
+                          className="secondary-btn action-btn"
+                          onClick={() => handleStartGatewayEdit(gateway)}
+                          title="Gateway Düzenle"
+                          aria-label="Gateway Düzenle"
+                        >
+                          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                            <path
+                              fill="currentColor"
+                              d="M3 17.25V21h3.75L17.81 9.94l-3.75-3.75zM20.71 7.04a1 1 0 0 0 0-1.41L18.37 3.29a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75z"
+                            />
+                          </svg>
+                        </button>
+                        <button
+                          type="button"
+                          className="danger-btn action-btn"
+                          onClick={() => void handleDeleteGateway(gateway.code)}
+                          title="Gateway Sil"
+                          aria-label="Gateway Sil"
+                        >
+                          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+                            <path
+                              fill="currentColor"
+                              d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6zm3.46-7.12 1.41-1.41L12 11.59l1.12-1.12 1.41 1.41L13.41 13l1.12 1.12-1.41 1.41L12 14.41l-1.12 1.12-1.41-1.41L10.59 13zM15.5 4l-1-1h-5l-1 1H5v2h14V4z"
+                            />
+                          </svg>
+                        </button>
+                      </div>
+                    ) : null}
                   </div>
                   <span>{gateway.host}</span>
                 </button>
@@ -435,8 +445,8 @@ export function DeviceManagementPanel({
                 <input value={selectedDevice.code} disabled readOnly />
               </label>
               <label>
-                Cihaz Tipi / Sinyal Profili
-                <input value={selectedDevice.signalProfile ?? "horstmann_sn2_fixed"} disabled readOnly />
+                Sinyal Kaynağı
+                <input value="Standart Sinyal Kataloğu" disabled readOnly />
               </label>
               <label>
                 İsim
@@ -551,7 +561,9 @@ export function DeviceManagementPanel({
         <div className="settings-modal-backdrop">
           <form className="settings-modal device-create-modal" onSubmit={handleCreateDevice}>
             <h3>Yeni Cihaz Ekle</h3>
-            <p className="helper-text">Sinyal adres haritası cihaz tipinden sabit gelir (Horstmann SN2).</p>
+            <p className="helper-text">
+              Cihaz standart sinyal kataloğundaki tüm sinyalleri otomatik okur. Sinyal adresleri <strong>Sinyaller</strong> sayfasından yönetilir.
+            </p>
             <label>
               Cihaz Kodu
               <input value={createCode} onChange={(event) => setCreateCode(event.target.value)} required />

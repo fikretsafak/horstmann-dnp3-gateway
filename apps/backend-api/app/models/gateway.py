@@ -21,3 +21,8 @@ class Gateway(Base):
     token: Mapped[str] = mapped_column(String(255), index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+
+    # Uzaktan yonetim: kontrol paneli bu adrese HTTP istegi atar
+    # (health + gelecekte /control/* endpoint'leri icin).
+    control_host: Mapped[str] = mapped_column(String(255), default="127.0.0.1", nullable=False)
+    control_port: Mapped[int] = mapped_column(Integer, default=0, nullable=False)

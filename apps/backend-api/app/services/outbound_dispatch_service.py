@@ -28,6 +28,8 @@ def dispatch_event(db: Session, *, event_kind: str, payload: dict) -> None:
 
 def _dispatch_with_retry(db: Session, *, target: OutboundTarget, event_kind: str, payload: dict) -> None:
     last_error: Exception | None = None
+    event_id = payload.get("message_id") or payload.get("event_id") or "unknown"
+    correlation_id = payload.get("correlation_id") or event_id
     for attempt in range(1, MAX_RETRY + 1):
         try:
             if target.protocol == "rest":
@@ -42,7 +44,13 @@ def _dispatch_with_retry(db: Session, *, target: OutboundTarget, event_kind: str
                 event_type="outbound_delivered",
                 severity="info",
                 message=f"{target.name} hedefine {event_kind} eventi gönderildi",
-                metadata={"target": target.name, "protocol": target.protocol, "attempt": attempt},
+                metadata={
+                    "target": target.name,
+                    "protocol": target.protocol,
+                    "attempt": attempt,
+                    "event_id": event_id,
+                    "correlation_id": correlation_id,
+                },
             )
             return
         except Exception as ex:
@@ -61,6 +69,8 @@ def _dispatch_with_retry(db: Session, *, target: OutboundTarget, event_kind: str
                         "attempt": attempt,
                         "backoff_seconds": wait_seconds,
                         "error": str(ex),
+                        "event_id": event_id,
+                        "correlation_id": correlation_id,
                     },
                 )
                 time.sleep(wait_seconds)
@@ -76,6 +86,8 @@ def _dispatch_with_retry(db: Session, *, target: OutboundTarget, event_kind: str
             "protocol": target.protocol,
             "max_retry": MAX_RETRY,
             "error": str(last_error) if last_error else "unknown",
+            "event_id": event_id,
+            "correlation_id": correlation_id,
             "payload": payload,
         },
     )

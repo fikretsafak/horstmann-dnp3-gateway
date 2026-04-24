@@ -1,16 +1,23 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "TelemetryBatch",
-  "type": "array",
-  "items": {
-    "type": "object",
-    "required": ["device_code", "signal_key", "value", "source_timestamp"],
-    "properties": {
-      "device_code": { "type": "string" },
-      "signal_key": { "type": "string" },
-      "value": { "type": "number" },
-      "quality": { "type": "string", "default": "good" },
-      "source_timestamp": { "type": "string", "format": "date-time" }
-    }
+  "title": "TelemetryRawReceivedEvent",
+  "type": "object",
+  "required": [
+    "message_id",
+    "device_code",
+    "signal_key",
+    "value",
+    "source_timestamp",
+    "source_gateway"
+  ],
+  "properties": {
+    "message_id": { "type": "string" },
+    "correlation_id": { "type": "string" },
+    "source_gateway": { "type": "string" },
+    "device_code": { "type": "string" },
+    "signal_key": { "type": "string" },
+    "value": { "type": "number" },
+    "quality": { "type": "string", "default": "good" },
+    "source_timestamp": { "type": "string", "format": "date-time" }
   }
 }

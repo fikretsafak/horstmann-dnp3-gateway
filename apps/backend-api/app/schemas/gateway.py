@@ -14,6 +14,8 @@ class GatewayCreate(BaseModel):
     device_code_prefix: str | None = None
     token: str
     is_active: bool = True
+    control_host: str = "127.0.0.1"
+    control_port: int = 0
 
 
 class GatewayUpdate(BaseModel):
@@ -26,6 +28,8 @@ class GatewayUpdate(BaseModel):
     device_code_prefix: str | None = None
     token: str | None = None
     is_active: bool | None = None
+    control_host: str | None = None
+    control_port: int | None = None
 
 
 class GatewayRead(BaseModel):
@@ -41,6 +45,50 @@ class GatewayRead(BaseModel):
     token: str
     is_active: bool
     last_seen_at: datetime | None = None
+    control_host: str = "127.0.0.1"
+    control_port: int = 0
 
     class Config:
         from_attributes = True
+
+
+class GatewayConfigDevice(BaseModel):
+    code: str
+    name: str
+    ip_address: str
+    dnp3_address: int
+    poll_interval_sec: int
+    timeout_ms: int
+    retry_count: int
+    signal_profile: str
+
+
+class GatewayConfigSignal(BaseModel):
+    """Standart sinyal listesi - tum cihazlar icin ortak DNP3 adresleri.
+
+    `source` alani Horstmann SN2 icin zorunlu: alarmin hangi kaynagi
+    (master / sat01 / sat02) uzerinden geldigi collector'da ayirt edilir.
+    """
+
+    key: str
+    label: str
+    unit: str | None = None
+    source: str = "master"
+    dnp3_class: str = "Class 1"
+    data_type: str
+    dnp3_object_group: int
+    dnp3_index: int
+    scale: float
+    offset: float
+    supports_alarm: bool
+
+
+class GatewayConfigResponse(BaseModel):
+    gateway_code: str
+    gateway_name: str
+    batch_interval_sec: int
+    max_devices: int
+    is_active: bool
+    devices: list[GatewayConfigDevice]
+    signals: list[GatewayConfigSignal]
+    config_version: str

@@ -121,6 +121,8 @@ export type Gateway = {
   token: string;
   is_active: boolean;
   last_seen_at?: string | null;
+  control_host: string;
+  control_port: number;
 };
 
 export type OutboundTarget = {
@@ -148,4 +150,73 @@ export type NotificationSettings = {
   sms_provider: string;
   sms_api_url: string;
   sms_api_key: string;
+};
+
+export type SignalDataType =
+  | "analog"
+  | "analog_output"
+  | "binary"
+  | "binary_output"
+  | "counter"
+  | "string";
+
+export type SignalSource = "master" | "sat01" | "sat02";
+
+export type SignalCatalogRow = {
+  id: number;
+  key: string;
+  label: string;
+  unit?: string | null;
+  description?: string | null;
+  source: SignalSource;
+  dnp3_class: string;
+  data_type: SignalDataType;
+  dnp3_object_group: number;
+  dnp3_index: number;
+  scale: number;
+  offset: number;
+  supports_alarm: boolean;
+  is_active: boolean;
+  display_order: number;
+};
+
+export type SignalLiveRow = {
+  signal_key: string;
+  signal_label: string;
+  unit?: string | null;
+  source: SignalSource;
+  device_id: number;
+  device_code: string;
+  device_name: string;
+  value: number;
+  quality: string;
+  source_timestamp: string;
+};
+
+export type AlarmLevel = "info" | "warning" | "critical";
+export type AlarmComparator =
+  | "gt"
+  | "gte"
+  | "lt"
+  | "lte"
+  | "eq"
+  | "ne"
+  | "between"
+  | "outside"
+  | "boolean_true"
+  | "boolean_false";
+
+export type AlarmRuleRow = {
+  id: number;
+  signal_key: string;
+  name: string;
+  description?: string | null;
+  level: AlarmLevel;
+  comparator: AlarmComparator;
+  threshold: number;
+  threshold_high?: number | null;
+  hysteresis: number;
+  debounce_sec: number;
+  device_code_filter?: string | null;
+  is_active: boolean;
 };

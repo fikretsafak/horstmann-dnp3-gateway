@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from uuid import uuid4
 
 from fastapi import HTTPException, status
 from sqlalchemy import select
@@ -9,7 +10,7 @@ from app.models.gateway import Gateway
 from app.models.gateway_ingest_batch import GatewayIngestBatch
 from app.models.telemetry import Telemetry
 from app.schemas.telemetry import GatewayTelemetryBatch, TelemetryIn
-from app.services.event_bus import event_bus
+from app.services.outbox_service import enqueue_outbox_event, flush_outbox
 from app.services.event_service import record_event
 
 
@@ -81,9 +82,18 @@ def ingest_gateway_legacy(
 
 
 def _persist_readings(db: Session, readings: list[TelemetryIn]) -> int:
-    _ = db
     accepted = 0
     for reading in readings:
-        event_bus.publish_event("telemetry.raw_received", reading.model_dump(mode="json"))
+        payload = reading.model_dump(mode="json")
+        payload["source_gateway"] = payload.get("source_gateway") or "api-manual"
+        message_id = payload.get("message_id") or str(uuid4())
+        payload["message_id"] = message_id
+        enqueue_outbox_event(
+            db,
+            topic="telemetry.raw_received",
+            payload=payload,
+            dedup_key=message_id,
+        )
         accepted += 1
+    flush_outbox(db, limit=max(accepted, 20))
     return accepted

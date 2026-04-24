@@ -1,6 +1,7 @@
 import type {
   AlarmComment,
   AlarmEvent,
+  AlarmRuleRow,
   ApiDevice,
   ApiTelemetry,
   AuthSession,
@@ -9,6 +10,8 @@ import type {
   LiveValue,
   NotificationSettings,
   OutboundTarget,
+  SignalCatalogRow,
+  SignalLiveRow,
   SystemEvent,
   UserRead,
   UserRole
@@ -281,7 +284,7 @@ export async function deleteUser(token: string, userId: number): Promise<void> {
 export async function updateUser(
   token: string,
   userId: number,
-  payload: { email: string; phone_number?: string | null; full_name: string; role: "operator" | "engineer" }
+  payload: { email: string; phone_number?: string | null; full_name: string; role: UserRole }
 ): Promise<void> {
   const response = await fetch(`${API_BASE_URL}/users/${userId}`, {
     method: "PATCH",
@@ -401,6 +404,8 @@ export async function createGateway(
     device_code_prefix?: string | null;
     token: string;
     is_active: boolean;
+    control_host: string;
+    control_port: number;
   }
 ): Promise<void> {
   const response = await fetch(`${API_BASE_URL}/gateways`, {
@@ -424,6 +429,8 @@ export async function updateGateway(
     device_code_prefix?: string | null;
     token?: string;
     is_active?: boolean;
+    control_host?: string;
+    control_port?: number;
   }
 ): Promise<void> {
   const response = await fetch(`${API_BASE_URL}/gateways/${gatewayCode}`, {
@@ -432,6 +439,22 @@ export async function updateGateway(
     body: JSON.stringify(payload)
   });
   if (!response.ok) throw await buildApiError(response, "Gateway güncellenemedi.");
+}
+
+export async function enableGateway(token: string, gatewayCode: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/gateways/${gatewayCode}/enable`, {
+    method: "POST",
+    headers: authHeaders(token)
+  });
+  if (!response.ok) throw await buildApiError(response, "Gateway aktifleştirilemedi.");
+}
+
+export async function disableGateway(token: string, gatewayCode: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/gateways/${gatewayCode}/disable`, {
+    method: "POST",
+    headers: authHeaders(token)
+  });
+  if (!response.ok) throw await buildApiError(response, "Gateway pasifleştirilemedi.");
 }
 
 export async function deleteGateway(token: string, gatewayCode: string): Promise<void> {
@@ -548,4 +571,94 @@ export async function testNotificationSms(
   });
   if (!response.ok) throw await buildApiError(response, "SMS test gönderimi başarısız.");
   return (await response.json()) as { ok: boolean; detail: string };
+}
+
+// ----- Signal Catalog -----
+export async function fetchSignals(token: string): Promise<SignalCatalogRow[]> {
+  const response = await fetch(`${API_BASE_URL}/signals`, { headers: authHeaders(token) });
+  if (!response.ok) throw await buildApiError(response, "Sinyal listesi alınamadı.");
+  return (await response.json()) as SignalCatalogRow[];
+}
+
+export async function createSignal(
+  token: string,
+  payload: Omit<SignalCatalogRow, "id">
+): Promise<SignalCatalogRow> {
+  const response = await fetch(`${API_BASE_URL}/signals`, {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) throw await buildApiError(response, "Sinyal oluşturulamadı.");
+  return (await response.json()) as SignalCatalogRow;
+}
+
+export async function updateSignal(
+  token: string,
+  signalKey: string,
+  payload: Partial<Omit<SignalCatalogRow, "id" | "key">>
+): Promise<SignalCatalogRow> {
+  const response = await fetch(`${API_BASE_URL}/signals/${encodeURIComponent(signalKey)}`, {
+    method: "PATCH",
+    headers: authHeaders(token),
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) throw await buildApiError(response, "Sinyal güncellenemedi.");
+  return (await response.json()) as SignalCatalogRow;
+}
+
+export async function deleteSignal(token: string, signalKey: string): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/signals/${encodeURIComponent(signalKey)}`, {
+    method: "DELETE",
+    headers: authHeaders(token)
+  });
+  if (!response.ok) throw await buildApiError(response, "Sinyal silinemedi.");
+}
+
+export async function fetchSignalLiveValues(token: string): Promise<SignalLiveRow[]> {
+  const response = await fetch(`${API_BASE_URL}/signals/live`, { headers: authHeaders(token) });
+  if (!response.ok) throw await buildApiError(response, "Canlı sinyal değerleri alınamadı.");
+  return (await response.json()) as SignalLiveRow[];
+}
+
+// ----- Alarm Rules -----
+export async function fetchAlarmRules(token: string): Promise<AlarmRuleRow[]> {
+  const response = await fetch(`${API_BASE_URL}/alarm-rules`, { headers: authHeaders(token) });
+  if (!response.ok) throw await buildApiError(response, "Alarm kuralları alınamadı.");
+  return (await response.json()) as AlarmRuleRow[];
+}
+
+export async function createAlarmRule(
+  token: string,
+  payload: Omit<AlarmRuleRow, "id">
+): Promise<AlarmRuleRow> {
+  const response = await fetch(`${API_BASE_URL}/alarm-rules`, {
+    method: "POST",
+    headers: authHeaders(token),
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) throw await buildApiError(response, "Alarm kuralı oluşturulamadı.");
+  return (await response.json()) as AlarmRuleRow;
+}
+
+export async function updateAlarmRule(
+  token: string,
+  ruleId: number,
+  payload: Partial<Omit<AlarmRuleRow, "id" | "signal_key">>
+): Promise<AlarmRuleRow> {
+  const response = await fetch(`${API_BASE_URL}/alarm-rules/${ruleId}`, {
+    method: "PATCH",
+    headers: authHeaders(token),
+    body: JSON.stringify(payload)
+  });
+  if (!response.ok) throw await buildApiError(response, "Alarm kuralı güncellenemedi.");
+  return (await response.json()) as AlarmRuleRow;
+}
+
+export async function deleteAlarmRule(token: string, ruleId: number): Promise<void> {
+  const response = await fetch(`${API_BASE_URL}/alarm-rules/${ruleId}`, {
+    method: "DELETE",
+    headers: authHeaders(token)
+  });
+  if (!response.ok) throw await buildApiError(response, "Alarm kuralı silinemedi.");
 }
