@@ -1,0 +1,220 @@
+"""Per-gateway docker-compose.yml renderlayici — CLI ve library olarak kullanilir.
+
+Frontend "Yeni gateway ekle" akisi:
+    1. Backend API: POST /gateways  -> code + token uretilir, DB'ye yazilir
+    2. Backend API: GET  /gateways/{code}/docker-compose -> bu modulu cagirir
+    3. Frontend: dosyayi indirir; kullanici sunucuda `docker compose -f gw-XXX.yml up -d`
+
+CLI:
+    python scripts/render_compose.py \
+        --code GW-001 \
+        --token "32-karakter-token" \
+        --name "Saha A SCADA" \
+        --backend-url https://hsl.formelektrik.com/api/v1 \
+        --rabbitmq-url amqp://hsl:secret@rmq.hsl:5672/ \
+        --host-port 8020 \
+        --image ghcr.io/fikretsafak/horstmann-dnp3-gateway:0.4.3 \
+        --output ./gw-001.yml
+
+Library:
+    from scripts.render_compose import render_compose
+    yaml_text = render_compose(code="GW-001", token=..., ...)
+"""
+
+from __future__ import annotations
+
+import argparse
+import re
+import secrets
+import string
+import sys
+from pathlib import Path
+
+DEFAULT_TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "docker" / "compose.template.yml"
+DEFAULT_ENV_TEMPLATE_PATH = Path(__file__).resolve().parent.parent / "docker" / ".env.template"
+
+# Kod formati: kucuk/buyuk harf, rakam, tire — alfanumerik (URL/dosya adi guvenli).
+_CODE_REGEX = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{1,63}$")
+
+
+class RenderError(ValueError):
+    """Sablon renderleme hatasi."""
+
+
+def generate_token(length: int = 48) -> str:
+    """Yeni gateway icin yeterince guclu rastgele token. Production icin >=32."""
+
+    alphabet = string.ascii_letters + string.digits
+    return "".join(secrets.choice(alphabet) for _ in range(length))
+
+
+def _validate_code(code: str) -> None:
+    if not _CODE_REGEX.match(code):
+        raise RenderError(
+            f"GATEWAY_CODE gecersiz: {code!r}. Kural: alfanumerik, '-' veya '_', 2-64 karakter, harf/rakamla baslar."
+        )
+
+
+def _render_text(template: str, replacements: dict[str, str]) -> str:
+    """Cift-suslu yer tutuculari ({{KEY}}) replacements ile degistirir."""
+
+    def _sub(match: "re.Match[str]") -> str:
+        key = match.group(1)
+        if key not in replacements:
+            raise RenderError(f"Sablonda doldurulmamis yer tutucu: {{{{ {key} }}}}")
+        return replacements[key]
+
+    return re.sub(r"\{\{\s*([A-Z0-9_]+)\s*\}\}", _sub, template)
+
+
+def render_compose(
+    *,
+    code: str,
+    token: str,
+    name: str,
+    backend_url: str,
+    rabbitmq_url: str,
+    host_port: int,
+    image: str = "ghcr.io/fikretsafak/horstmann-dnp3-gateway:latest",
+    app_environment: str = "production",
+    template_path: Path = DEFAULT_TEMPLATE_PATH,
+) -> str:
+    """Tek bir gateway icin docker compose YAML'i uretir."""
+
+    _validate_code(code)
+    if len(token) < 16:
+        raise RenderError("GATEWAY_TOKEN cok kisa (>=16 karakter olmali)")
+    if not 1 <= host_port <= 65535:
+        raise RenderError(f"host_port aralik disi: {host_port}")
+
+    template = template_path.read_text(encoding="utf-8")
+    return _render_text(
+        template,
+        {
+            "GATEWAY_CODE": code,
+            "GATEWAY_CODE_LOWER": code.lower(),
+            "GATEWAY_TOKEN": token,
+            "GATEWAY_NAME": name,
+            "BACKEND_API_URL": backend_url.rstrip("/"),
+            "RABBITMQ_URL": rabbitmq_url,
+            "HOST_HEALTH_PORT": str(host_port),
+            "IMAGE": image,
+            "APP_ENVIRONMENT": app_environment,
+        },
+    )
+
+
+def render_env(
+    *,
+    code: str,
+    token: str,
+    name: str,
+    backend_url: str,
+    rabbitmq_url: str,
+    app_environment: str = "production",
+    template_path: Path = DEFAULT_ENV_TEMPLATE_PATH,
+) -> str:
+    """Per-instance .env dosyasini renderlar (compose'a alternatif --env-file akis)."""
+
+    _validate_code(code)
+    template = template_path.read_text(encoding="utf-8")
+    return _render_text(
+        template,
+        {
+            "GATEWAY_CODE": code,
+            "GATEWAY_TOKEN": token,
+            "GATEWAY_NAME": name,
+            "BACKEND_API_URL": backend_url.rstrip("/"),
+            "RABBITMQ_URL": rabbitmq_url,
+            "APP_ENVIRONMENT": app_environment,
+        },
+    )
+
+
+def _build_arg_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(description="Render per-gateway docker compose YAML")
+    p.add_argument("--code", required=True, help="Gateway kodu (orn. GW-001)")
+    p.add_argument(
+        "--token",
+        default=None,
+        help="Gateway token. Verilmezse rastgele 48-karakter uretilir ve stderr'a yazilir.",
+    )
+    p.add_argument("--name", default="Horstmann SN2 Gateway", help="Insan-okur isim")
+    p.add_argument(
+        "--backend-url",
+        required=True,
+        help="Backend public URL (orn. https://hsl.formelektrik.com/api/v1)",
+    )
+    p.add_argument(
+        "--rabbitmq-url",
+        required=True,
+        help="RabbitMQ AMQP URL (orn. amqp://user:pass@rmq:5672/)",
+    )
+    p.add_argument(
+        "--host-port",
+        type=int,
+        required=True,
+        help="Host'ta health endpoint icin acilacak port (her instance icin farkli)",
+    )
+    p.add_argument(
+        "--image",
+        default="ghcr.io/fikretsafak/horstmann-dnp3-gateway:latest",
+        help="Docker image tag (default: ghcr.io/fikretsafak/horstmann-dnp3-gateway:latest)",
+    )
+    p.add_argument(
+        "--app-environment",
+        default="production",
+        choices=("development", "staging", "production"),
+    )
+    p.add_argument(
+        "--output",
+        default=None,
+        help="Cikis dosya yolu (yoksa stdout'a yazar)",
+    )
+    p.add_argument(
+        "--render-env",
+        action="store_true",
+        help="docker-compose yerine .env dosyasi renderla (host'ta python ile dogrudan calistirma)",
+    )
+    return p
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _build_arg_parser().parse_args(argv)
+    token = args.token or generate_token()
+    if args.token is None:
+        print(f"[render_compose] generated token (>=48 char): {token}", file=sys.stderr)
+
+    if args.render_env:
+        rendered = render_env(
+            code=args.code,
+            token=token,
+            name=args.name,
+            backend_url=args.backend_url,
+            rabbitmq_url=args.rabbitmq_url,
+            app_environment=args.app_environment,
+        )
+    else:
+        rendered = render_compose(
+            code=args.code,
+            token=token,
+            name=args.name,
+            backend_url=args.backend_url,
+            rabbitmq_url=args.rabbitmq_url,
+            host_port=args.host_port,
+            image=args.image,
+            app_environment=args.app_environment,
+        )
+
+    if args.output:
+        out_path = Path(args.output)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(rendered, encoding="utf-8")
+        print(f"[render_compose] yazildi: {out_path}", file=sys.stderr)
+    else:
+        sys.stdout.write(rendered)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

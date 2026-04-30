@@ -1,0 +1,79 @@
+# Horstmann Smart Logger DNP3 Gateway — per-instance docker compose
+#
+# Bu dosya backend'in (veya scripts/render_compose.py'nin) frontend "Yeni
+# gateway ekle" akisi sirasinda renderladigi sablondur. Yer tutucular:
+#   {{GATEWAY_CODE}}    — backend'de tanimli kod (orn. GW-001)
+#   {{GATEWAY_TOKEN}}   — backend'in urettigi rastgele token (>=32 char)
+#   {{GATEWAY_NAME}}    — insan-okur isim
+#   {{BACKEND_API_URL}} — backend public URL (orn. https://hsl.formelektrik.com/api/v1)
+#   {{RABBITMQ_URL}}    — broker URL (orn. amqp://hsl:secret@hsl-rmq:5672/)
+#   {{HOST_HEALTH_PORT}}— host tarafinda exposed port (her instance icin farkli)
+#   {{IMAGE}}           — docker image tag (orn. ghcr.io/fikretsafak/horstmann-dnp3-gateway:0.4.3)
+#   {{APP_ENVIRONMENT}} — production | staging | development
+#
+# Uretilen dosya tek basina calisir: `docker compose -f gw-001.yml up -d`.
+# Ayni host'ta N tane gateway icin N tane farkli dosya / project name kullanilir.
+
+name: hsl-gateway-{{GATEWAY_CODE_LOWER}}
+
+services:
+  gateway:
+    image: {{IMAGE}}
+    container_name: hsl-gw-{{GATEWAY_CODE_LOWER}}
+    restart: unless-stopped
+    environment:
+      GATEWAY_CODE: "{{GATEWAY_CODE}}"
+      GATEWAY_TOKEN: "{{GATEWAY_TOKEN}}"
+      GATEWAY_NAME: "{{GATEWAY_NAME}}"
+      APP_ENVIRONMENT: "{{APP_ENVIRONMENT}}"
+      GATEWAY_MODE: "dnp3"
+      BACKEND_API_URL: "{{BACKEND_API_URL}}"
+      BACKEND_API_VERIFY_SSL: "true"
+      RABBITMQ_URL: "{{RABBITMQ_URL}}"
+      RABBITMQ_EXCHANGE: "hsl.events"
+      RABBITMQ_ROUTING_KEY: "telemetry.raw_received"
+      WORKER_HEALTH_HOST: "0.0.0.0"
+      WORKER_HEALTH_PORT: "8020"
+      DEFAULT_POLL_INTERVAL_SEC: "5"
+      MAX_PARALLEL_DEVICES: "50"
+      DNP3_LOCAL_ADDRESS: "1"
+      DNP3_TCP_PORT: "20000"
+      DNP3_RESPONSE_TIMEOUT_SEC: "8"
+      DNP3_READ_STRATEGY: "event_driven"
+      DNP3_EVENT_BASELINE_INTERVAL_SEC: "60"
+      LOG_LEVEL: "INFO"
+      LOG_FORMAT: "json"
+      SHOW_GATEWAY_TOKEN_ON_START: "false"
+    ports:
+      # Sadece host'a aciliyor; container ici sabit 8020.
+      - "127.0.0.1:{{HOST_HEALTH_PORT}}:8020"
+    volumes:
+      # Persistent state: instance_id + outbox SQLite. Volume kaybolursa
+      # at-most-once garanti yerine duplicate mesaj gelebilir (tag-engine
+      # idempotent oldugu icin sorun cikarmaz; yine de korumak isteriz).
+      - state:/app/.gateway_state
+    networks:
+      - hsl
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0) if urllib.request.urlopen('http://127.0.0.1:8020/health',timeout=3).status==200 else sys.exit(1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  state:
+    name: hsl-gw-{{GATEWAY_CODE_LOWER}}-state
+
+networks:
+  hsl:
+    # External=true: host'taki ortak hsl ag'ina bagi. Aksi halde her gateway
+    # ayri network olusturur — sorun cikmaz, sadece tek bir RabbitMQ/backend'e
+    # cikar yolu host network uzerinden olur.
+    name: hsl
+    external: false

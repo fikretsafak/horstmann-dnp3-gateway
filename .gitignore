@@ -1,14 +1,33 @@
 __pycache__/
 *.pyc
+*.pyo
+*.pyd
+*.egg-info/
+*.egg
+.venv/
+venv/
+env/
+.env
+*.log
+logs/
 .pytest_cache/
+.coverage
+htmlcov/
 .mypy_cache/
 .ruff_cache/
-.env
-.env.*
-node_modules/
 dist/
 build/
 .DS_Store
 Thumbs.db
 .idea/
 .vscode/
+
+# Renderlanmis per-gateway compose dosyalari (token icerir!)
+gateways/
+*.gateway_state/
+hsl-gw-*.yml
+hsl-gw-*.env
+
+# Local multi-instance test env dosyalari (token icerir, ornek degil)
+.env.gw*
+

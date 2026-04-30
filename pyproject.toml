@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "horstmann-dnp3-gateway"
+version = "0.4.3"
+description = "Horstmann Smart Logger platformu icin standalone DNP3 gateway servisi"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary - Form Elektrik" }
+authors = [{ name = "Form Elektrik", email = "info@formelektrik.com" }]
+dependencies = [
+    "pika>=1.3,<2.0",
+    "pydantic>=2.5,<3.0",
+    "pydantic-settings>=2.1,<3.0",
+    "requests>=2.31,<3.0",
+]
+
+[project.optional-dependencies]
+dnp3 = ["nfm-dnp3>=1.0.1,<2.0"]
+dev = [
+    "pytest>=7.4,<9.0",
+    "pytest-cov>=4.1,<6.0",
+    "ruff>=0.5,<1.0",
+]
+
+[project.scripts]
+horstmann-dnp3-gateway = "dnp3_gateway.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-ra -q"
+
+[tool.ruff]
+line-length = 110
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "N"]
+ignore = ["E501"]

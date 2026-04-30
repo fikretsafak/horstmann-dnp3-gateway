@@ -1,0 +1,46 @@
+# Yerel gelistirme artifaktlari (image'a girmemeli)
+.venv/
+.env
+.env.*
+.gateway_state/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Git / dokuman (image'a gerek yok)
+.git/
+.gitignore
+.gitattributes
+docs/
+*.md
+CHANGELOG.md
+
+# Test / lokal scriptler
+tests/
+scripts/install.ps1
+scripts/run_gateway.ps1
+scripts/show_env_summary.py
+scripts/new_gateway.ps1
+run_gateway.cmd
+
+# Log / outbox dosyalari
+*.log
+logs/
+*.db
+*.db-wal
+*.db-shm
