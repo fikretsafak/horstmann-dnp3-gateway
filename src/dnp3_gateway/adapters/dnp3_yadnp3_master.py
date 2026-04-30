@@ -182,7 +182,18 @@ def _make_master_app(cache: _DeviceCache, device_code: str) -> Any:
 
 
 class _ManagedMaster:
-    """Bir cihaz icin TCP client + master + cache."""
+    """Bir cihaz icin master session + cache.
+
+    Iki kanal modu desteklenir:
+
+    - ``listening`` (default): cihaz dinler, gateway TCP client olarak
+      ``device.ip_address:tcp_port``'a baglanir. ``AddTCPClient``.
+    - ``initiating``: cihaz master'a outbound baglanir (4G/SIM saha
+      cihazlari icin). Gateway bu cihaza ozel ``master_ip_port``
+      uzerinde ``AddTCPServer`` ile dinler. OpenDNP3 TCP server kanali
+      tek client kabul ettigi icin cihaz basina ayri port gerek; backend
+      bunu otomatik atar (20100..20700).
+    """
 
     def __init__(
         self,
@@ -199,14 +210,36 @@ class _ManagedMaster:
         self._manager = manager
         self._scan_interval_sec = max(1, int(scan_interval_sec))
         self._baseline_interval_sec = max(self._scan_interval_sec, int(baseline_interval_sec))
-        self._channel = manager.AddTCPClient(
-            f"ch_{device.code}",
-            opendnp3.levels.NORMAL,
-            opendnp3.ChannelRetry.Default(),
-            [opendnp3.IPEndpoint(device.ip_address.strip(), int(tcp_port))],
-            "0.0.0.0",
-            None,
-        )
+
+        endpoint_type = (device.ip_endpoint_type or "listening").lower()
+        channel_mode: str
+        channel_endpoint_label: str
+        if endpoint_type == "initiating":
+            # Gateway TCP server modunda dinler; cihaz buraya baglanir.
+            # master_ip_port backend tarafindan atanir; yoksa fallback olarak
+            # tcp_port'u kullaniriz.
+            listen_port = int(device.master_ip_port or tcp_port)
+            self._channel = manager.AddTCPServer(
+                f"ch_{device.code}",
+                opendnp3.levels.NORMAL,
+                opendnp3.ServerAcceptMode.CloseExisting,
+                opendnp3.IPEndpoint("0.0.0.0", listen_port),
+                None,
+            )
+            channel_mode = "initiating(server)"
+            channel_endpoint_label = f"0.0.0.0:{listen_port}"
+        else:
+            self._channel = manager.AddTCPClient(
+                f"ch_{device.code}",
+                opendnp3.levels.NORMAL,
+                opendnp3.ChannelRetry.Default(),
+                [opendnp3.IPEndpoint(device.ip_address.strip(), int(tcp_port))],
+                "0.0.0.0",
+                None,
+            )
+            channel_mode = "listening(client)"
+            channel_endpoint_label = f"{device.ip_address}:{tcp_port}"
+
         self._soe = _make_soe_handler(self.cache, device.code)
         self._app = _make_master_app(self.cache, device.code)
         cfg = opendnp3.MasterStackConfig()
@@ -238,11 +271,11 @@ class _ManagedMaster:
         )
         self._master.Enable()
         logger.info(
-            "yadnp3_master_enabled device=%s ip=%s:%s remote=%s local=%s "
+            "yadnp3_master_enabled device=%s mode=%s endpoint=%s remote=%s local=%s "
             "event_scan=%ss baseline_scan=%ss",
             device.code,
-            device.ip_address,
-            tcp_port,
+            channel_mode,
+            channel_endpoint_label,
             device.dnp3_address,
             local_address,
             self._scan_interval_sec,

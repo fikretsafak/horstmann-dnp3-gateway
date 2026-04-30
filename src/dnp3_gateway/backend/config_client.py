@@ -33,6 +33,11 @@ class DeviceConfig:
     `master_address` None ise gateway `.env` `DNP3_LOCAL_ADDRESS` (varsayilan 1)
     kullanilir; aksi halde frontend'de cihaz basina set edilen master/local addr
     (DNP3 link layer LocalAddr) kullanilir. Saha cihazi bu adresi bekler.
+
+    `ip_endpoint_type`:
+      - "listening" (default): cihaz dinler, gateway TCP client olarak baglanir
+      - "initiating": cihaz master'a outbound baglanir (4G/SIM kart sahasi);
+        gateway bu cihaz icin `master_ip_port` portunda TCP server acar
     """
 
     code: str
@@ -41,6 +46,8 @@ class DeviceConfig:
     dnp3_address: int = 1
     dnp3_tcp_port: int | None = None
     master_address: int | None = None
+    ip_endpoint_type: str = "listening"
+    master_ip_port: int | None = None
     poll_interval_sec: int = 5
     timeout_ms: int = 3000
     retry_count: int = 2
@@ -202,6 +209,16 @@ def _parse_gateway_config(data: dict[str, Any], *, default_gateway_code: str) ->
             dnp3_address=int(item.get("dnp3_address", 1) or 1),
             dnp3_tcp_port=_parse_optional_dnp3_tcp_port(item),
             master_address=_parse_optional_master_address(item),
+            ip_endpoint_type=(
+                str(item.get("ip_endpoint_type") or "listening").strip().lower()
+                if str(item.get("ip_endpoint_type") or "").strip().lower() in ("initiating", "listening")
+                else "listening"
+            ),
+            master_ip_port=(
+                int(item["master_ip_port"])
+                if item.get("master_ip_port") not in (None, "", 0) and 1 <= int(item["master_ip_port"]) <= 65535
+                else None
+            ),
             poll_interval_sec=int(item.get("poll_interval_sec", 5) or 5),
             timeout_ms=int(item.get("timeout_ms", 3000) or 3000),
             retry_count=int(item.get("retry_count", 2) or 2),
