@@ -25,11 +25,11 @@
 # Coklu instance: bkz. docs/DOCKER.md ve scripts/render_compose.py.
 
 ARG PYTHON_VERSION=3.11
-ARG DNP3_LIBRARY=dnp3py
+ARG DNP3_LIBRARY=yadnp3
 
 # ---------- Builder stage --------------------------------------------------
-# yadnp3 kaynaktan derlenmek istenirse cmake / pybind11 / git burada hazir
-# olmali. dnp3py modunda bu stage hizli geciliir.
+# yadnp3 (OpenDNP3 native) PyPI'de manylinux_2_28_x86_64 wheel'i ile yayinda
+# (3.2.1.1+); kaynaktan derlemeye gerek yok. dnp3py modu fallback olarak kalir.
 FROM python:${PYTHON_VERSION}-slim-bookworm AS builder
 
 ARG DNP3_LIBRARY
@@ -39,20 +39,6 @@ ENV PIP_NO_CACHE_DIR=1 \
     PYTHONDONTWRITEBYTECODE=1
 
 WORKDIR /build
-
-# yadnp3 derleme: f0rw4rd/opendnp3 fork + cmake + pybind11. Zaman alir, bu
-# yuzden default kapali; kullanici --build-arg ile bilerek aciyor.
-COPY docker/build-yadnp3.sh /build/build-yadnp3.sh
-RUN chmod +x /build/build-yadnp3.sh \
-    && if [ "${DNP3_LIBRARY}" = "yadnp3" ]; then \
-         apt-get update \
-         && apt-get install -y --no-install-recommends \
-              build-essential cmake git libssl-dev pkg-config \
-         && /build/build-yadnp3.sh /build/wheels \
-         && rm -rf /var/lib/apt/lists/*; \
-       else \
-         mkdir -p /build/wheels; \
-       fi
 
 # Proje bagimliliklarini ayri katmanda kur — kaynak degisince yeniden derleme yok.
 COPY requirements.txt /build/requirements.txt
@@ -92,10 +78,12 @@ RUN pip install --no-index --find-links=/tmp/wheels \
         $(ls /tmp/wheels/*.whl 2>/dev/null) \
     && rm -rf /tmp/wheels
 
-# Eger yadnp3 wheel kuruldu ise nfm-dnp3'u kurmaya gerek yok; ama default
-# build (dnp3py) PyPI'den nfm-dnp3 ister. Tek bir adim:
+# DNP3 kutuphanesi PyPI'den dogrudan kurulur (manylinux wheel hazir):
+#   - yadnp3 (default, OpenDNP3 native) -> Group 110 string + tum tipler
+#   - nfm-dnp3 (fallback, saf python)    -> sadece numeric (no Group 110)
 RUN if [ "${DNP3_LIBRARY}" = "yadnp3" ]; then \
-        echo "[image] DNP3 library = yadnp3 (OpenDNP3 native)"; \
+        pip install "yadnp3==3.2.1.1" \
+        && echo "[image] DNP3 library = yadnp3 (OpenDNP3 native; Group 110 supported)"; \
     else \
         pip install "nfm-dnp3>=1.0.1,<2.0" \
         && echo "[image] DNP3 library = nfm-dnp3 (pure python; no Group 110 strings)"; \

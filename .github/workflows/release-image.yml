@@ -75,13 +75,12 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
-          # NOTE: dnp3py (PyPI saf python) ile build — string sinyalleri (Group
-          # 110) DESTEKLENMEZ ama numeric sinyaller calisir ve image hizla
-          # build edilir. yadnp3 build'i pybind11 cmake fetch sorunlari
-          # yasiyor (issue: opendnp3 fork build); o cozulunce DNP3_LIBRARY=yadnp3
-          # ile tekrar acilacak. Bkz. docker/build-yadnp3.sh.
+          # yadnp3 (OpenDNP3 native) — PyPI manylinux wheel'i hazir, build
+          # hizli; Group 110 string sinyalleri tam destekli. amd64 only —
+          # yadnp3 PyPI'de arm64 wheel saglamiyor; arm64 ihtiyaci olunca
+          # ayri bir build path eklenir.
           build-args: |
-            DNP3_LIBRARY=dnp3py
+            DNP3_LIBRARY=yadnp3
           platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
