@@ -972,14 +972,22 @@ class Dnp3TelemetryReader(TelemetryReader):
             return int(p)
         return int(default_port)
 
+    @staticmethod
+    def _resolve_local_address(device: DeviceConfig, default_addr: int) -> int:
+        a = device.master_address
+        if a is not None and 0 <= a <= 65519:
+            return int(a)
+        return int(default_addr)
+
     def _fingerprint(self, device: DeviceConfig) -> tuple[str, str, int, int, int]:
         port = self._resolve_tcp_port(device, self._default_dnp3_tcp_port)
+        local_addr = self._resolve_local_address(device, self.local_address)
         return (
             device.code,
             (device.ip_address or "").strip(),
             port,
             int(device.dnp3_address),
-            int(self.local_address),
+            int(local_addr),
         )
 
     def read_device(
@@ -1086,9 +1094,10 @@ class Dnp3TelemetryReader(TelemetryReader):
                 self._sessions.pop(device.code, None)
             if device.code not in self._sessions:
                 port = self._resolve_tcp_port(device, self._default_dnp3_tcp_port)
+                local_addr = self._resolve_local_address(device, self.local_address)
                 session = Dnp3DeviceSession(
                     device=device,
-                    local_address=self.local_address,
+                    local_address=local_addr,
                     tcp_port=port,
                     response_timeout_sec=self.response_timeout_sec,
                     read_strategy=self._read_strategy,

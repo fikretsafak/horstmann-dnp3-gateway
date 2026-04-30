@@ -75,12 +75,14 @@ jobs:
         with:
           context: .
           file: ./Dockerfile
-          # yadnp3 (OpenDNP3 native, ~10dk derleme) prod icin tercih edilir;
-          # default DNP3_LIBRARY=dnp3py ile saf python (string DESTEKLENMEZ).
-          # Sahada Horstmann SN2 string sinyalleri kullanildigi icin yadnp3 sart.
+          # NOTE: dnp3py (PyPI saf python) ile build — string sinyalleri (Group
+          # 110) DESTEKLENMEZ ama numeric sinyaller calisir ve image hizla
+          # build edilir. yadnp3 build'i pybind11 cmake fetch sorunlari
+          # yasiyor (issue: opendnp3 fork build); o cozulunce DNP3_LIBRARY=yadnp3
+          # ile tekrar acilacak. Bkz. docker/build-yadnp3.sh.
           build-args: |
-            DNP3_LIBRARY=yadnp3
-          platforms: linux/amd64,linux/arm64
+            DNP3_LIBRARY=dnp3py
+          platforms: linux/amd64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

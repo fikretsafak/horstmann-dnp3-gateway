@@ -31,3 +31,4 @@ hsl-gw-*.env
 # Local multi-instance test env dosyalari (token icerir, ornek degil)
 .env.gw*
 
+.claude/

@@ -29,6 +29,10 @@ class DeviceConfig:
 
     `dnp3_tcp_port` None ise gateway `.env` `DNP3_TCP_PORT` (varsayilan) kullanilir;
     aksi halde cihaz bazli TCP port (backend/frontend cihaz kaydi).
+
+    `master_address` None ise gateway `.env` `DNP3_LOCAL_ADDRESS` (varsayilan 1)
+    kullanilir; aksi halde frontend'de cihaz basina set edilen master/local addr
+    (DNP3 link layer LocalAddr) kullanilir. Saha cihazi bu adresi bekler.
     """
 
     code: str
@@ -36,6 +40,7 @@ class DeviceConfig:
     ip_address: str
     dnp3_address: int = 1
     dnp3_tcp_port: int | None = None
+    master_address: int | None = None
     poll_interval_sec: int = 5
     timeout_ms: int = 3000
     retry_count: int = 2
@@ -98,6 +103,20 @@ def _parse_optional_dnp3_tcp_port(item: dict[str, Any]) -> int | None:
     return None
 
 
+def _parse_optional_master_address(item: dict[str, Any]) -> int | None:
+    """Backend alan adlari: master_address | dnp3_master_address | local_address."""
+    for key in ("master_address", "dnp3_master_address", "local_address"):
+        if key not in item or item[key] is None or item[key] == "":
+            continue
+        try:
+            a = int(item[key])
+        except (TypeError, ValueError):
+            continue
+        if 0 <= a <= 65519:  # DNP3 link addr range (broadcast addrs hariç)
+            return a
+    return None
+
+
 class BackendConfigClient:
     """HTTP client: `X-Gateway-Token` + tanimli kimlik basliklari ile auth."""
 
@@ -150,6 +169,7 @@ def _parse_gateway_config(data: dict[str, Any], *, default_gateway_code: str) ->
             ip_address=str(item.get("ip_address") or ""),
             dnp3_address=int(item.get("dnp3_address", 1) or 1),
             dnp3_tcp_port=_parse_optional_dnp3_tcp_port(item),
+            master_address=_parse_optional_master_address(item),
             poll_interval_sec=int(item.get("poll_interval_sec", 5) or 5),
             timeout_ms=int(item.get("timeout_ms", 3000) or 3000),
             retry_count=int(item.get("retry_count", 2) or 2),

@@ -289,16 +289,24 @@ class Yadnp3TelemetryReader(TelemetryReader):
             return int(p)
         return int(default_port)
 
+    @staticmethod
+    def _resolve_local_address(device: DeviceConfig, default_addr: int) -> int:
+        a = device.master_address
+        if a is not None and 0 <= a <= 65519:
+            return int(a)
+        return int(default_addr)
+
     def _ensure_master(self, device: DeviceConfig) -> _ManagedMaster:
         with self._lock:
             existing = self._masters.get(device.code)
             if existing is not None:
                 return existing
             port = self._resolve_tcp_port(device, self._default_dnp3_tcp_port)
+            local_addr = self._resolve_local_address(device, self._local_address)
             mm = _ManagedMaster(
                 self._manager,
                 device=device,
-                local_address=self._local_address,
+                local_address=local_addr,
                 tcp_port=port,
                 scan_interval_sec=self._scan_interval_sec,
                 baseline_interval_sec=self._baseline_interval_sec,
