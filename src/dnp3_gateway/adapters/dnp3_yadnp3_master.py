@@ -426,7 +426,11 @@ class Yadnp3TelemetryReader(TelemetryReader):
                     source=s.source,
                     data_type=s.data_type,
                     raw_value=raw,
-                    scaled_value=round(scaled, 4),
+                    # 6 ondalik basamak: DNP3 G30v6 (64-bit double) tipindeki
+                    # cihazlardan gelen elektrik olcumlerinde (V/A) anlamli
+                    # hassasiyet 4-6 basamaga kadar gider. 4 basamak bazi
+                    # voltaj olcumlerinde anlamli digit'i kesebiliyordu.
+                    scaled_value=round(scaled, 6),
                     quality="good",
                     value_string=value_string,
                 )
