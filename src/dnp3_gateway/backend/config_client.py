@@ -117,6 +117,27 @@ def _parse_optional_master_address(item: dict[str, Any]) -> int | None:
     return None
 
 
+_LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "0.0.0.0", "::1"}
+
+
+def _rewrite_loopback_ip(ip: str, *, enabled: bool) -> str:
+    """Container icinde loopback IP host.docker.internal'a cevirilir.
+
+    Frontend'de kullanici cihazi "127.0.0.1" olarak ayarladiysa (cati yazilim
+    ve gateway ayni makinada) ve gateway Docker'da calisiyorsa bu IP
+    container'in kendisini gosterir. host.docker.internal Linux Docker 20.10+
+    ve Docker Desktop tarafindan host'un IPv4 adresine cevrilir; compose
+    template'inde bu mapping zaten "extra_hosts: host-gateway" ile garanti.
+    """
+
+    if not enabled:
+        return ip
+    h = (ip or "").strip().lower()
+    if h in _LOOPBACK_HOSTS:
+        return "host.docker.internal"
+    return ip
+
+
 class BackendConfigClient:
     """HTTP client: `X-Gateway-Token` + tanimli kimlik basliklari ile auth."""
 
@@ -161,12 +182,23 @@ class BackendConfigClient:
 def _parse_gateway_config(data: dict[str, Any], *, default_gateway_code: str) -> GatewayConfig:
     """Bos/bozuk alanlari varsayilanlarla doldurarak GatewayConfig ureten helper."""
 
+    # Env flag (default True): loopback device IP'yi container icinde
+    # host.docker.internal'a cevir. Tipik kurulum (cati yazilim + simulator
+    # ayni Windows host'unda) icin gerekli; ozel saha kurulumlarinda
+    # kapatilabilir (REWRITE_LOOPBACK_TO_HOST=false).
+    import os as _os
+
+    rewrite = (_os.environ.get("REWRITE_LOOPBACK_TO_HOST", "true").strip().lower()
+               not in ("0", "false", "no", "off"))
+
     devices_raw = data.get("devices") or []
     devices = [
         DeviceConfig(
             code=str(item["code"]),
             name=str(item.get("name") or item["code"]),
-            ip_address=str(item.get("ip_address") or ""),
+            ip_address=_rewrite_loopback_ip(
+                str(item.get("ip_address") or ""), enabled=rewrite
+            ),
             dnp3_address=int(item.get("dnp3_address", 1) or 1),
             dnp3_tcp_port=_parse_optional_dnp3_tcp_port(item),
             master_address=_parse_optional_master_address(item),

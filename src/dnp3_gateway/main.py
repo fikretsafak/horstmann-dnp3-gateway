@@ -18,6 +18,7 @@ from __future__ import annotations
 import logging
 import signal
 import time
+from pathlib import Path
 from threading import Event, Thread
 
 from dnp3_gateway import __version__
@@ -179,8 +180,20 @@ def run(current_settings: Settings | None = None) -> int:
         cfg.backend_api_url,
     )
 
-    state = GatewayState()
+    # Disk cache: backend kapali iken / container restart'ta gateway en son
+    # gordugu config ile (cihaz IP'leri, sinyal listesi, master_address)
+    # polling'e devam eder. Yeni config geldiginde uzerine yazilir.
+    config_cache_path = Path(cfg.gateway_state_dir) / f"config_{identity.gateway_code}.json"
+    state = GatewayState(cache_path=config_cache_path)
+    if state.load_from_cache():
+        # Disk'te onceki config varsa polling hemen baslayabilir; backend
+        # ulasilmazsa bile veri toplama durmaz.
+        config_ready_initial = True
+    else:
+        config_ready_initial = False
     config_ready = Event()
+    if config_ready_initial:
+        config_ready.set()
     stop_event = Event()
 
     health, metrics, actual_health_port = start_health_server(
@@ -204,8 +217,6 @@ def run(current_settings: Settings | None = None) -> int:
     )
     # Outbox: RabbitMQ erisilemezse mesajlari diske yaz, retrier sonra gonderir.
     # Process restart'a dayanikli (kalici SQLite); at-least-once delivery.
-    from pathlib import Path
-
     outbox_path = Path(cfg.gateway_state_dir) / f"outbox_{identity.gateway_code}.db"
     outbox = Outbox(outbox_path)
     pending = outbox.pending_count()

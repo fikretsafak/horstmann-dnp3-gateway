@@ -87,6 +87,14 @@ class Settings(BaseSettings):
     # ----- Polling davranisi ---------------------------------------------------
     default_poll_interval_sec: int = Field(default=5, ge=1, le=3600)
     max_parallel_devices: int = Field(default=25, ge=1, le=500)
+    # Container icinde calisirken cihaz IP'si "127.0.0.1" / "localhost" /
+    # "0.0.0.0" olarak gelmisse host'a (host.docker.internal) cevir. Cati
+    # yazilim + simulator + gateway ayni Windows host'unda calisirken bu
+    # gerekli — aksi halde container kendisine baglanmaya calisir.
+    rewrite_loopback_to_host: bool = Field(
+        default=True,
+        description="Device IP loopback ise host.docker.internal'a cevirilsin mi",
+    )
 
     # ----- DNP3 master parametreleri ------------------------------------------
     dnp3_local_address: int = Field(default=1, ge=0, le=65519)
