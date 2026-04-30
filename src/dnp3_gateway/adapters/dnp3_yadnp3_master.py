@@ -324,11 +324,36 @@ class Yadnp3TelemetryReader(TelemetryReader):
         cache = mm.cache
         connected = cache.is_connected()
 
-        # Bagi koptu/kopuk: TUM sinyaller 'comm_lost' kalitesinde yayinlanir.
-        # Frontend bu kalitedeki cihazi "haberlesme yok" olarak gosterir.
-        # value/value_string son iyi degerleri tasiyabilir (bilgi amacli),
-        # ama quality=comm_lost ile frontend stale uyari yapar.
-        if not connected:
+        # Stale-data guard: OpenDNP3'in `OnOpen`/`OnClose` callback'leri her
+        # turde TCP kopmasinda tetiklenmeyebilir (channel auto-retry icin
+        # session ayakta gorunmeye devam edebilir). Bu yuzden link flag'ine
+        # ek olarak "son frame'den bu yana gecen sure" kontrolune da bakariz.
+        # Threshold = max(2*baseline, 3*scan, 30s) — cihazdan beklenen poll
+        # ritminin bir kac katini gecince kesin kopuk sayariz.
+        threshold = max(
+            self._baseline_interval_sec * 2,
+            self._scan_interval_sec * 3,
+            30,
+        )
+        last_update = cache.last_update_at()
+        now = time.time()
+        stale = last_update == 0.0 or (now - last_update) > threshold
+
+        # Bagi koptu/kopuk veya veri eski: TUM sinyaller 'comm_lost' kalitesinde
+        # yayinlanir. Frontend bu kalitedeki cihazi "haberlesme yok" olarak
+        # gosterir; canli sinyal sayfasinda quality "bad" donmesi icin de
+        # device.communicationStatus collector'da downstream tarafindan
+        # comm_lost sinyallerine bakilarak set edilir.
+        if not connected or stale:
+            if connected and stale:
+                logger.warning(
+                    "yadnp3_device_stale device=%s ip=%s last_data_age=%ds threshold=%ds "
+                    "(link kopmadi gozukuyor ama veri eskidi - comm_lost yayinlaniyor)",
+                    device.code,
+                    device.ip_address,
+                    int(now - last_update) if last_update else -1,
+                    threshold,
+                )
             return [
                 SignalReading(
                     signal_key=s.key,
