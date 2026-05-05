@@ -257,6 +257,11 @@ class _ManagedMaster:
         # Periyodik scan'ler — event-driven cache guncellemesi:
         #   - Class 1/2/3 (event) sik (her scan_interval_sec)
         #   - Class 0 (statik baseline) seyrek (baseline_interval_sec)
+        #   - Integrity scan (Class 0+1+2+3) baseline ile ayni sikta — bu,
+        #     outstation'da Class 0'a atanmamis ama static olan objeleri
+        #     (ozellikle G110 OctetString) getirir. ClassField(True,True,True,True)
+        #     opendnp3 icinde "AllClasses" anlamina gelir ve outstation tum static
+        #     ve event verisini tek istekle yollar.
         self._scan_event = self._master.AddClassScan(
             opendnp3.ClassField(False, True, True, True),  # 1+2+3
             opendnp3.TimeDuration.Seconds(self._scan_interval_sec),
@@ -265,6 +270,15 @@ class _ManagedMaster:
         )
         self._scan_class0 = self._master.AddClassScan(
             opendnp3.ClassField(True, False, False, False),  # 0
+            opendnp3.TimeDuration.Seconds(self._baseline_interval_sec),
+            self._soe,
+            opendnp3.TaskConfig.Default(),
+        )
+        # Integrity scan — Class 0+1+2+3 birlikte. Cihazda G110 noktalari
+        # Class 0'a atanmamis olabilir (Horstmann'da default boyle); bu scan
+        # tum static objeleri (class atamasindan bagimsiz) getirir.
+        self._scan_integrity = self._master.AddClassScan(
+            opendnp3.ClassField(True, True, True, True),  # 0+1+2+3
             opendnp3.TimeDuration.Seconds(self._baseline_interval_sec),
             self._soe,
             opendnp3.TaskConfig.Default(),
