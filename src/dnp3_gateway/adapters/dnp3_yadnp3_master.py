@@ -210,10 +210,6 @@ class _ManagedMaster:
         self._manager = manager
         self._scan_interval_sec = max(1, int(scan_interval_sec))
         self._baseline_interval_sec = max(self._scan_interval_sec, int(baseline_interval_sec))
-        # String sinyalleri icin son yayinlanan deger cache'i — ayni metin tekrar
-        # yayinlanmaz (modem'i bos yere uyandirma). Key: signal_key, Value: text.
-        self._last_published_string: dict[str, str] = {}
-        self._last_published_lock = threading.Lock()
 
         endpoint_type = (device.ip_endpoint_type or "listening").lower()
         channel_mode: str
@@ -261,11 +257,6 @@ class _ManagedMaster:
         # Periyodik scan'ler — event-driven cache guncellemesi:
         #   - Class 1/2/3 (event) sik (her scan_interval_sec)
         #   - Class 0 (statik baseline) seyrek (baseline_interval_sec)
-        #   - Integrity scan (Class 0+1+2+3) baseline ile ayni sikta — bu,
-        #     outstation'da Class 0'a atanmamis ama static olan objeleri
-        #     (ozellikle G110 OctetString) getirir. ClassField(True,True,True,True)
-        #     opendnp3 icinde "AllClasses" anlamina gelir ve outstation tum static
-        #     ve event verisini tek istekle yollar.
         self._scan_event = self._master.AddClassScan(
             opendnp3.ClassField(False, True, True, True),  # 1+2+3
             opendnp3.TimeDuration.Seconds(self._scan_interval_sec),
@@ -278,168 +269,7 @@ class _ManagedMaster:
             self._soe,
             opendnp3.TaskConfig.Default(),
         )
-        # Integrity scan — Class 0+1+2+3 birlikte. Cihazda G110 noktalari
-        # Class 0'a atanmamis olabilir (Horstmann'da default boyle); bu scan
-        # tum sinif atanmis objeleri tek istekte getirir.
-        self._scan_integrity = self._master.AddClassScan(
-            opendnp3.ClassField(True, True, True, True),  # 0+1+2+3
-            opendnp3.TimeDuration.Seconds(self._baseline_interval_sec),
-            self._soe,
-            opendnp3.TaskConfig.Default(),
-        )
-
-        # G110 (Octet String) icin SPESIFIK range scan — cihazda 'Not Class 0'
-        # olarak isaretli oldugu icin class scan G110 getirmez. AddRangeScan
-        # outstation'a "G110 noktalarini direct oku" der; sinif atamasindan
-        # bagimsiz. Index range genis tutuldu (0-65535).
-        #
-        # ONEMLI: String degerler STATIK (cihaz seri no, firmware vb.) — surekli
-        # okumak modem'i uyandirir, pil tuketir. Bu yuzden interval cok seyrek
-        # (1 saat). OnOpen handler'da bagli oldugumuzda manuel bir kerelik scan
-        # tetiklenir — startup'ta hemen okunur, sonra saatte bir tazelenir.
-
-        # Once master object'inde hangi metotlarin var oldugunu log'la — debug
-        # icin kritik (yadnp3 surumune gore API farkli olabilir).
-        master_methods = [m for m in dir(self._master) if not m.startswith("_")]
-        logger.info(
-            "yadnp3_master_methods device=%s methods=%s",
-            device.code,
-            ",".join(sorted(master_methods)),
-        )
-
-        self._scan_g110 = None
-        try:
-            self._scan_g110 = self._master.AddRangeScan(
-                opendnp3.GroupVariationID(110, 0),  # G110 Var0 (default variation)
-                0,
-                65535,
-                opendnp3.TimeDuration.Seconds(3600),  # 1 saat — string'ler statik
-                self._soe,
-                opendnp3.TaskConfig.Default(),
-            )
-            logger.info(
-                "yadnp3_g110_range_scan_added device=%s interval=3600s (statik)",
-                device.code,
-            )
-        except AttributeError as exc:
-            logger.warning(
-                "yadnp3_g110_AddRangeScan_NOT_AVAILABLE device=%s error=%s — will try ScanRange fallback",
-                device.code,
-                exc,
-            )
-        except Exception as exc:  # noqa: BLE001
-            # Imza farki / kabul edilmeyen parametre — full traceback ile yakala
-            import traceback as _tb
-            logger.warning(
-                "yadnp3_g110_range_scan_failed device=%s error=%s\n%s",
-                device.code,
-                exc,
-                _tb.format_exc(),
-            )
-
         self._master.Enable()
-
-        # Bagli olur olmaz string'leri hemen oku — saatlik scan'i beklemeden.
-        # Birden cok teknigi sirayla dene; ilk basarili olan yeter.
-        def _trigger_initial_g110_scan() -> None:
-            # Link kurulmasini bekle (max 30 saniye).
-            for _ in range(30):
-                if self.cache.is_connected():
-                    break
-                time.sleep(1)
-            else:
-                logger.warning(
-                    "yadnp3_g110_initial_scan_skipped device=%s reason=link_not_open_30s",
-                    device.code,
-                )
-                return
-
-            # Birka saniye daha bekle — link acildi ama ilk session resmi tamamlanmadi.
-            time.sleep(2)
-
-            # 1. Tercih: AddRangeScan ile eklediysek scan.Demand()
-            scan = getattr(self, "_scan_g110", None)
-            if scan is not None:
-                try:
-                    if hasattr(scan, "Demand"):
-                        scan.Demand()
-                        logger.info(
-                            "yadnp3_g110_initial_scan_demanded device=%s method=Demand",
-                            device.code,
-                        )
-                        return
-                    elif hasattr(scan, "demand"):
-                        scan.demand()
-                        logger.info(
-                            "yadnp3_g110_initial_scan_demanded device=%s method=demand",
-                            device.code,
-                        )
-                        return
-                except Exception as exc:  # noqa: BLE001
-                    import traceback as _tb
-                    logger.warning(
-                        "yadnp3_g110_demand_failed device=%s error=%s\n%s",
-                        device.code,
-                        exc,
-                        _tb.format_exc(),
-                    )
-
-            # 2. Fallback: master.ScanRange — bir kerelik direct read (recurring degil)
-            try:
-                self._master.ScanRange(
-                    opendnp3.GroupVariationID(110, 0),
-                    0,
-                    65535,
-                    self._soe,
-                    opendnp3.TaskConfig.Default(),
-                )
-                logger.info(
-                    "yadnp3_g110_initial_ScanRange_called device=%s g=110 var=0 idx=0-65535",
-                    device.code,
-                )
-                return
-            except AttributeError:
-                pass
-            except Exception as exc:  # noqa: BLE001
-                import traceback as _tb
-                logger.warning(
-                    "yadnp3_g110_ScanRange_failed device=%s error=%s\n%s",
-                    device.code,
-                    exc,
-                    _tb.format_exc(),
-                )
-
-            # 3. Son fallback: master.Scan (bazi yadnp3 surumlerinde generic)
-            try:
-                self._master.Scan(
-                    opendnp3.GroupVariationID(110, 0),
-                    self._soe,
-                    opendnp3.TaskConfig.Default(),
-                )
-                logger.info(
-                    "yadnp3_g110_initial_Scan_called device=%s",
-                    device.code,
-                )
-                return
-            except AttributeError:
-                pass
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "yadnp3_g110_Scan_failed device=%s error=%s",
-                    device.code,
-                    exc,
-                )
-
-            logger.error(
-                "yadnp3_g110_no_method_worked device=%s — string sinyaller okunamayacak",
-                device.code,
-            )
-
-        threading.Thread(
-            target=_trigger_initial_g110_scan,
-            name=f"g110_initial_scan_{device.code}",
-            daemon=True,
-        ).start()
         logger.info(
             "yadnp3_master_enabled device=%s mode=%s endpoint=%s remote=%s local=%s "
             "event_scan=%ss baseline_scan=%ss",
@@ -590,43 +420,6 @@ class Yadnp3TelemetryReader(TelemetryReader):
                 continue
             raw, value_string = entry
             scaled = raw * s.scale + s.offset
-
-            # String sinyaller (DNP3 G110): cihaz seri no, firmware vb. STATIK.
-            # Surekli yayinlamak modem'i uyandirir, pil tuketir. Son yayinlanan
-            # ile ayni ise 'no_change' don — poller bunu yayinlamaz.
-            if s.data_type == "string":
-                txt = value_string or ""
-                with mm._last_published_lock:
-                    last_txt = mm._last_published_string.get(s.key)
-                if last_txt == txt:
-                    readings.append(
-                        SignalReading(
-                            signal_key=s.key,
-                            source=s.source,
-                            data_type=s.data_type,
-                            raw_value=raw,
-                            scaled_value=0.0,
-                            quality="no_change",
-                            value_string=None,
-                        )
-                    )
-                    continue
-                # Ilk kez veya degismis: yayinla ve cache'e kaydet.
-                with mm._last_published_lock:
-                    mm._last_published_string[s.key] = txt
-                readings.append(
-                    SignalReading(
-                        signal_key=s.key,
-                        source=s.source,
-                        data_type=s.data_type,
-                        raw_value=raw,
-                        scaled_value=0.0,
-                        quality="good",
-                        value_string=value_string,
-                    )
-                )
-                continue
-
             readings.append(
                 SignalReading(
                     signal_key=s.key,
