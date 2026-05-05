@@ -210,6 +210,10 @@ class _ManagedMaster:
         self._manager = manager
         self._scan_interval_sec = max(1, int(scan_interval_sec))
         self._baseline_interval_sec = max(self._scan_interval_sec, int(baseline_interval_sec))
+        # String sinyalleri icin son yayinlanan deger cache'i — ayni metin tekrar
+        # yayinlanmaz (modem'i bos yere uyandirma). Key: signal_key, Value: text.
+        self._last_published_string: dict[str, str] = {}
+        self._last_published_lock = threading.Lock()
 
         endpoint_type = (device.ip_endpoint_type or "listening").lower()
         channel_mode: str
@@ -285,24 +289,26 @@ class _ManagedMaster:
         )
 
         # G110 (Octet String) icin SPESIFIK range scan — cihazda 'Not Class 0'
-        # olarak isaretli olabilir, o zaman class scan onu getirmez. Bu scan
-        # Group=110 Var=0 (default variation) icin range tarayisi yapar ve
-        # outstation'a "G110 noktalarini direct oku" der; class atamasindan
-        # bagimsizdir. Index range genis tutuldu (0-65535) — outstation kendi
-        # tanimladigi index'leri donduurur.
+        # olarak isaretli oldugu icin class scan G110 getirmez. AddRangeScan
+        # outstation'a "G110 noktalarini direct oku" der; sinif atamasindan
+        # bagimsiz. Index range genis tutuldu (0-65535).
+        #
+        # ONEMLI: String degerler STATIK (cihaz seri no, firmware vb.) — surekli
+        # okumak modem'i uyandirir, pil tuketir. Bu yuzden interval cok seyrek
+        # (1 saat). OnOpen handler'da bagli oldugumuzda manuel bir kerelik scan
+        # tetiklenir — startup'ta hemen okunur, sonra saatte bir tazelenir.
         try:
             self._scan_g110 = self._master.AddRangeScan(
                 opendnp3.GroupVariationID(110, 0),  # G110 Var0 (default variation)
                 0,
                 65535,
-                opendnp3.TimeDuration.Seconds(self._baseline_interval_sec),
+                opendnp3.TimeDuration.Seconds(3600),  # 1 saat — string'ler statik
                 self._soe,
                 opendnp3.TaskConfig.Default(),
             )
             logger.info(
-                "yadnp3_g110_range_scan_added device=%s interval=%ss",
+                "yadnp3_g110_range_scan_added device=%s interval=3600s (statik)",
                 device.code,
-                self._baseline_interval_sec,
             )
         except Exception as exc:  # noqa: BLE001
             # Eski yadnp3 surumlerinde AddRangeScan yoksa veya GroupVariationID
@@ -315,6 +321,36 @@ class _ManagedMaster:
             self._scan_g110 = None
 
         self._master.Enable()
+
+        # Bagli olur olmaz string'leri hemen oku — saatlik scan'i beklemeden.
+        # Background thread, link acildiktan birkac saniye sonra G110 scan
+        # tetikler. Daha sonra periyodik olarak baseline'da yapilir (1 saat).
+        def _trigger_initial_g110_scan() -> None:
+            # Link kurulmasini bekle (max 30 saniye), kuruldu ise demand et.
+            for _ in range(30):
+                if self.cache.is_connected():
+                    break
+                time.sleep(1)
+            else:
+                return
+            scan = getattr(self, "_scan_g110", None)
+            if scan is None:
+                return
+            try:
+                scan.Demand()
+                logger.info("yadnp3_g110_initial_scan_demanded device=%s", device.code)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "yadnp3_g110_initial_scan_failed device=%s error=%s",
+                    device.code,
+                    exc,
+                )
+
+        threading.Thread(
+            target=_trigger_initial_g110_scan,
+            name=f"g110_initial_scan_{device.code}",
+            daemon=True,
+        ).start()
         logger.info(
             "yadnp3_master_enabled device=%s mode=%s endpoint=%s remote=%s local=%s "
             "event_scan=%ss baseline_scan=%ss",
@@ -465,6 +501,43 @@ class Yadnp3TelemetryReader(TelemetryReader):
                 continue
             raw, value_string = entry
             scaled = raw * s.scale + s.offset
+
+            # String sinyaller (DNP3 G110): cihaz seri no, firmware vb. STATIK.
+            # Surekli yayinlamak modem'i uyandirir, pil tuketir. Son yayinlanan
+            # ile ayni ise 'no_change' don — poller bunu yayinlamaz.
+            if s.data_type == "string":
+                txt = value_string or ""
+                with mm._last_published_lock:
+                    last_txt = mm._last_published_string.get(s.key)
+                if last_txt == txt:
+                    readings.append(
+                        SignalReading(
+                            signal_key=s.key,
+                            source=s.source,
+                            data_type=s.data_type,
+                            raw_value=raw,
+                            scaled_value=0.0,
+                            quality="no_change",
+                            value_string=None,
+                        )
+                    )
+                    continue
+                # Ilk kez veya degismis: yayinla ve cache'e kaydet.
+                with mm._last_published_lock:
+                    mm._last_published_string[s.key] = txt
+                readings.append(
+                    SignalReading(
+                        signal_key=s.key,
+                        source=s.source,
+                        data_type=s.data_type,
+                        raw_value=raw,
+                        scaled_value=0.0,
+                        quality="good",
+                        value_string=value_string,
+                    )
+                )
+                continue
+
             readings.append(
                 SignalReading(
                     signal_key=s.key,
