@@ -276,13 +276,44 @@ class _ManagedMaster:
         )
         # Integrity scan — Class 0+1+2+3 birlikte. Cihazda G110 noktalari
         # Class 0'a atanmamis olabilir (Horstmann'da default boyle); bu scan
-        # tum static objeleri (class atamasindan bagimsiz) getirir.
+        # tum sinif atanmis objeleri tek istekte getirir.
         self._scan_integrity = self._master.AddClassScan(
             opendnp3.ClassField(True, True, True, True),  # 0+1+2+3
             opendnp3.TimeDuration.Seconds(self._baseline_interval_sec),
             self._soe,
             opendnp3.TaskConfig.Default(),
         )
+
+        # G110 (Octet String) icin SPESIFIK range scan — cihazda 'Not Class 0'
+        # olarak isaretli olabilir, o zaman class scan onu getirmez. Bu scan
+        # Group=110 Var=0 (default variation) icin range tarayisi yapar ve
+        # outstation'a "G110 noktalarini direct oku" der; class atamasindan
+        # bagimsizdir. Index range genis tutuldu (0-65535) — outstation kendi
+        # tanimladigi index'leri donduurur.
+        try:
+            self._scan_g110 = self._master.AddRangeScan(
+                opendnp3.GroupVariationID(110, 0),  # G110 Var0 (default variation)
+                0,
+                65535,
+                opendnp3.TimeDuration.Seconds(self._baseline_interval_sec),
+                self._soe,
+                opendnp3.TaskConfig.Default(),
+            )
+            logger.info(
+                "yadnp3_g110_range_scan_added device=%s interval=%ss",
+                device.code,
+                self._baseline_interval_sec,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # Eski yadnp3 surumlerinde AddRangeScan yoksa veya GroupVariationID
+            # imzasi farkli ise sessizce devam et — integrity scan zaten ekli.
+            logger.warning(
+                "yadnp3_g110_range_scan_failed device=%s error=%s",
+                device.code,
+                exc,
+            )
+            self._scan_g110 = None
+
         self._master.Enable()
         logger.info(
             "yadnp3_master_enabled device=%s mode=%s endpoint=%s remote=%s local=%s "
