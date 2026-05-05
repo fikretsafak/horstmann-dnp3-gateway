@@ -297,6 +297,17 @@ class _ManagedMaster:
         # okumak modem'i uyandirir, pil tuketir. Bu yuzden interval cok seyrek
         # (1 saat). OnOpen handler'da bagli oldugumuzda manuel bir kerelik scan
         # tetiklenir — startup'ta hemen okunur, sonra saatte bir tazelenir.
+
+        # Once master object'inde hangi metotlarin var oldugunu log'la — debug
+        # icin kritik (yadnp3 surumune gore API farkli olabilir).
+        master_methods = [m for m in dir(self._master) if not m.startswith("_")]
+        logger.info(
+            "yadnp3_master_methods device=%s methods=%s",
+            device.code,
+            ",".join(sorted(master_methods)),
+        )
+
+        self._scan_g110 = None
         try:
             self._scan_g110 = self._master.AddRangeScan(
                 opendnp3.GroupVariationID(110, 0),  # G110 Var0 (default variation)
@@ -310,41 +321,119 @@ class _ManagedMaster:
                 "yadnp3_g110_range_scan_added device=%s interval=3600s (statik)",
                 device.code,
             )
-        except Exception as exc:  # noqa: BLE001
-            # Eski yadnp3 surumlerinde AddRangeScan yoksa veya GroupVariationID
-            # imzasi farkli ise sessizce devam et — integrity scan zaten ekli.
+        except AttributeError as exc:
             logger.warning(
-                "yadnp3_g110_range_scan_failed device=%s error=%s",
+                "yadnp3_g110_AddRangeScan_NOT_AVAILABLE device=%s error=%s — will try ScanRange fallback",
                 device.code,
                 exc,
             )
-            self._scan_g110 = None
+        except Exception as exc:  # noqa: BLE001
+            # Imza farki / kabul edilmeyen parametre — full traceback ile yakala
+            import traceback as _tb
+            logger.warning(
+                "yadnp3_g110_range_scan_failed device=%s error=%s\n%s",
+                device.code,
+                exc,
+                _tb.format_exc(),
+            )
 
         self._master.Enable()
 
         # Bagli olur olmaz string'leri hemen oku — saatlik scan'i beklemeden.
-        # Background thread, link acildiktan birkac saniye sonra G110 scan
-        # tetikler. Daha sonra periyodik olarak baseline'da yapilir (1 saat).
+        # Birden cok teknigi sirayla dene; ilk basarili olan yeter.
         def _trigger_initial_g110_scan() -> None:
-            # Link kurulmasini bekle (max 30 saniye), kuruldu ise demand et.
+            # Link kurulmasini bekle (max 30 saniye).
             for _ in range(30):
                 if self.cache.is_connected():
                     break
                 time.sleep(1)
             else:
+                logger.warning(
+                    "yadnp3_g110_initial_scan_skipped device=%s reason=link_not_open_30s",
+                    device.code,
+                )
                 return
+
+            # Birka saniye daha bekle — link acildi ama ilk session resmi tamamlanmadi.
+            time.sleep(2)
+
+            # 1. Tercih: AddRangeScan ile eklediysek scan.Demand()
             scan = getattr(self, "_scan_g110", None)
-            if scan is None:
-                return
+            if scan is not None:
+                try:
+                    if hasattr(scan, "Demand"):
+                        scan.Demand()
+                        logger.info(
+                            "yadnp3_g110_initial_scan_demanded device=%s method=Demand",
+                            device.code,
+                        )
+                        return
+                    elif hasattr(scan, "demand"):
+                        scan.demand()
+                        logger.info(
+                            "yadnp3_g110_initial_scan_demanded device=%s method=demand",
+                            device.code,
+                        )
+                        return
+                except Exception as exc:  # noqa: BLE001
+                    import traceback as _tb
+                    logger.warning(
+                        "yadnp3_g110_demand_failed device=%s error=%s\n%s",
+                        device.code,
+                        exc,
+                        _tb.format_exc(),
+                    )
+
+            # 2. Fallback: master.ScanRange — bir kerelik direct read (recurring degil)
             try:
-                scan.Demand()
-                logger.info("yadnp3_g110_initial_scan_demanded device=%s", device.code)
+                self._master.ScanRange(
+                    opendnp3.GroupVariationID(110, 0),
+                    0,
+                    65535,
+                    self._soe,
+                    opendnp3.TaskConfig.Default(),
+                )
+                logger.info(
+                    "yadnp3_g110_initial_ScanRange_called device=%s g=110 var=0 idx=0-65535",
+                    device.code,
+                )
+                return
+            except AttributeError:
+                pass
+            except Exception as exc:  # noqa: BLE001
+                import traceback as _tb
+                logger.warning(
+                    "yadnp3_g110_ScanRange_failed device=%s error=%s\n%s",
+                    device.code,
+                    exc,
+                    _tb.format_exc(),
+                )
+
+            # 3. Son fallback: master.Scan (bazi yadnp3 surumlerinde generic)
+            try:
+                self._master.Scan(
+                    opendnp3.GroupVariationID(110, 0),
+                    self._soe,
+                    opendnp3.TaskConfig.Default(),
+                )
+                logger.info(
+                    "yadnp3_g110_initial_Scan_called device=%s",
+                    device.code,
+                )
+                return
+            except AttributeError:
+                pass
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
-                    "yadnp3_g110_initial_scan_failed device=%s error=%s",
+                    "yadnp3_g110_Scan_failed device=%s error=%s",
                     device.code,
                     exc,
                 )
+
+            logger.error(
+                "yadnp3_g110_no_method_worked device=%s — string sinyaller okunamayacak",
+                device.code,
+            )
 
         threading.Thread(
             target=_trigger_initial_g110_scan,
