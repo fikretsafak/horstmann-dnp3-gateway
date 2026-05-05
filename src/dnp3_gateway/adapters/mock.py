@@ -30,6 +30,10 @@ class MockTelemetryReader(TelemetryReader):
     def _generate(self, signal: SignalConfig) -> SignalReading:
         raw, quality = self._mock_value_for(signal)
         scaled = raw * signal.scale + signal.offset
+        # data_type=string ise mock metin uret (cihaz seri no, firmware vb.)
+        value_string: str | None = None
+        if signal.data_type == "string":
+            value_string = self._mock_string_for(signal)
         return SignalReading(
             signal_key=signal.key,
             source=signal.source,
@@ -37,7 +41,29 @@ class MockTelemetryReader(TelemetryReader):
             raw_value=raw,
             scaled_value=round(scaled, 4),
             quality=quality,
+            value_string=value_string,
         )
+
+    def _mock_string_for(self, signal: SignalConfig) -> str:
+        """Sinyal anahtarina gore makul bir mock metin uret. Frontend'de
+        DNP3 G110 (Octet String) sinyallerin canli akmasini test etmek icin."""
+        key = signal.key.lower()
+        if "serial" in key:
+            return f"SN-{self._rng.randint(100000, 999999)}"
+        if "firmware" in key or "fw_version" in key:
+            return f"v{self._rng.randint(1, 4)}.{self._rng.randint(0, 9)}.{self._rng.randint(0, 9)}"
+        if "hardware" in key or "hw_version" in key:
+            return f"hw-rev-{self._rng.choice(['A', 'B', 'C'])}{self._rng.randint(1, 5)}"
+        if "model" in key or "device_type" in key:
+            return self._rng.choice(["SN2-Master", "SN2-Sat", "SmartNav-2.0"])
+        if "manufacturer" in key or "vendor" in key:
+            return "Horstmann"
+        if "location" in key or "site" in key:
+            return self._rng.choice(["Pasinler-1", "Sarikamis-2", "Karakurt-3"])
+        if "name" in key or "label" in key:
+            return f"NODE-{self._rng.randint(1, 250):03d}"
+        # Fallback - generic mock string
+        return f"MOCK-{self._rng.randint(1000, 9999)}"
 
     def _mock_value_for(self, signal: SignalConfig) -> tuple[float, str]:
         key = signal.key.lower()
