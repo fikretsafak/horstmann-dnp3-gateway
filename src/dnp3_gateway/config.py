@@ -98,8 +98,16 @@ class Settings(BaseSettings):
     )
 
     # ----- Polling davranisi ---------------------------------------------------
-    default_poll_interval_sec: int = Field(default=5, ge=1, le=3600)
-    max_parallel_devices: int = Field(default=25, ge=1, le=500)
+    # Cycle interval: gateway'in due_devices kontrolu icin "uyanma" araligi.
+    # Eski 5sn frontend gecikmesinin ana sebebiydi; 1sn ile gateway saniyede
+    # bir cihaz queue'sunu kontrol eder. Ek I/O yuku yok cunku event-driven
+    # mod cihazda yeni veri yoksa adapter'dan "no_change" dönuyor (publish
+    # olmuyor).
+    default_poll_interval_sec: int = Field(default=1, ge=1, le=3600)
+    # Paralelizm: bir cycle'da kac cihaz aynı anda okunur. 100 cihaz/gateway
+    # senaryosunda 25 yetersiz; tek cycle'da 100 cihaz paralel okuma yapilirsa
+    # her cihazin yanit suresi <100ms oldugu icin cycle 1sn altinda biter.
+    max_parallel_devices: int = Field(default=100, ge=1, le=500)
     # Tek bir cihaz okuma + publish icin maksimum sure (sn). Bu sureyi asarsa
     # cihaz "timeout" kabul edilir, mark_read cagirilir, diger cihazlar
     # etkilenmez. 100+ cihazda 1-2 hangat olan cihaz tum cycle'i bloke etmesin.
