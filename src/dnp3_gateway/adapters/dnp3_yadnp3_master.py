@@ -55,23 +55,54 @@ class Yadnp3AdapterError(RuntimeError):
 
 
 class _DeviceCache:
-    """Cihaz basina son-okunan degerler. ISOEHandler yazar, read_device okur."""
+    """Cihaz basina son-okunan degerler. ISOEHandler yazar, read_device okur.
+
+    Event-driven semantik:
+      * `set()`: yeni okuma geldi. Onceki degerle aynı ise dirty isaretlenmez
+        (Class 0 baseline scan ayni degeri tekrar yazsa bile cycle'da "publish
+        edilecek degisiklik" sayilmaz). Farkli ise dirty=True ve sonraki
+        `read_and_clear_dirty()` cagrisinda 'good' kaliteyle dondurulur.
+      * `is_dirty()` / read_device: sadece degismis sinyaller publish edilir.
+        Diger sinyaller 'no_change' donerek bant genisligini koruriz.
+
+    Onceden cache her okumada son snapshot'i 'good' kaliteyle veriyordu;
+    bu, 7 cihaz x 175 sinyal = 1225 mesaji her cycle'da yayinlamasina yol
+    aciyordu (gercek event-driven degil, snapshot-driven). Dirty flag ile
+    yalnizca degisen sinyaller mesaja donusur.
+    """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
         # (group, index) -> (raw_float, value_string_or_None)
         self._values: dict[tuple[int, int], tuple[float, str | None]] = {}
+        # Son read_device'tan beri degismis sinyaller. read_device basarili
+        # publish sonrasi clear eder.
+        self._dirty: set[tuple[int, int]] = set()
         self._connected = False
         self._last_update_at: float = 0.0
 
     def set(self, group: int, index: int, raw: float, value_string: str | None = None) -> None:
+        key = (group, index)
         with self._lock:
-            self._values[(group, index)] = (raw, value_string)
+            prev = self._values.get(key)
+            self._values[key] = (raw, value_string)
             self._last_update_at = time.time()
+            # Ilk yazma veya degisiklik varsa dirty isaretle. Class 0 baseline
+            # tekrar ayni degeri yazarsa dirty olmaz.
+            if prev is None or prev[0] != raw or prev[1] != value_string:
+                self._dirty.add(key)
 
     def get(self, group: int, index: int) -> tuple[float, str | None] | None:
         with self._lock:
             return self._values.get((group, index))
+
+    def is_dirty(self, group: int, index: int) -> bool:
+        with self._lock:
+            return (group, index) in self._dirty
+
+    def clear_dirty(self, group: int, index: int) -> None:
+        with self._lock:
+            self._dirty.discard((group, index))
 
     def set_connected(self, ok: bool) -> None:
         with self._lock:
@@ -425,6 +456,21 @@ class Yadnp3TelemetryReader(TelemetryReader):
                     )
                 )
                 continue
+            # Event-driven: degisiklik yoksa 'no_change' — bu cycle'da yayinlama.
+            # Son set()'ten beri ayni deger okunmadi mi? Dirty flag ile karar.
+            if not cache.is_dirty(s.dnp3_object_group, s.dnp3_index):
+                readings.append(
+                    SignalReading(
+                        signal_key=s.key,
+                        source=s.source,
+                        data_type=s.data_type,
+                        raw_value=0.0,
+                        scaled_value=0.0,
+                        quality="no_change",
+                        value_string=None,
+                    )
+                )
+                continue
             raw, value_string = entry
             scaled = raw * s.scale + s.offset
             readings.append(
@@ -442,6 +488,9 @@ class Yadnp3TelemetryReader(TelemetryReader):
                     value_string=value_string,
                 )
             )
+            # Bu sinyal su an yayinlanacak — dirty flag'i temizle. Bir sonraki
+            # cycle'a kadar tekrar set() cagirilmazsa "no_change" donecek.
+            cache.clear_dirty(s.dnp3_object_group, s.dnp3_index)
         return readings
 
     def forget_devices(self, active_device_codes: set[str]) -> int:
