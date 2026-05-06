@@ -49,5 +49,22 @@ class TelemetryReader(ABC):
         ile loglanir, dongu durmaz.
         """
 
+    def forget_devices(self, active_device_codes: set[str]) -> int:
+        """Backend config'inden artik gorulmeyen cihazlarin acik master/channel
+        kaynaklarini kapat.
+
+        `active_device_codes` set'i mevcut config'te olan cihaz kodlarini icerir.
+        Adapter ic state'inde bu set'te olmayan tum cihaz baglantilarini
+        disable etmeli (TCP RST, link kapatma). Aksi halde silinen cihazlar
+        zombie olarak yasamaya devam eder ve baska cihazlarla port/IP
+        catismalarina yol acar (mevcut bug).
+
+        Returns: kaç cihazın temizlendigi.
+
+        Default: no-op (mock adapter gibi state tutmayanlar icin).
+        """
+        _ = active_device_codes
+        return 0
+
     def close(self) -> None:
         """Kaynak temizleme; varsayilanda no-op."""

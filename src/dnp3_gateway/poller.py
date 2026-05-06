@@ -147,6 +147,24 @@ def run_poll_cycle(
     signals = filter_readable_signals(state.signals())
     if not signals:
         return 0
+    # Cycle basinda silinen cihazlarin acik master/channel'larini kapat.
+    # Bu olmazsa zombie master'lar yeni cihazlarla TCP/DNP3 link layer
+    # catismasina yol acar (ornek: ayni IP'de iki cihaz, biri silindiginde
+    # diger cihazin baglantisi flap yapar). state.devices() tum config'teki
+    # cihazlari verir (sadece due olanlar degil), boylece geride kalan
+    # cihazlarin master'i da hayatta tutulur.
+    try:
+        all_active_codes = {d.code for d in state.devices()}
+        if hasattr(reader, "forget_devices"):
+            cleaned = reader.forget_devices(all_active_codes)
+            if cleaned:
+                logger.info(
+                    "reader_forgot_stale_devices count=%d active=%d",
+                    cleaned,
+                    len(all_active_codes),
+                )
+    except Exception:  # noqa: BLE001 — cleanup hatasi cycle'i blocklamasin
+        logger.debug("reader_forget_devices_error", exc_info=True)
     due = state.due_devices(now_monotonic)
     if not due:
         return 0
