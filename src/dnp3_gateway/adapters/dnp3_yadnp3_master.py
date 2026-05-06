@@ -85,15 +85,30 @@ class _DeviceCache:
         self._stale_announced: bool = False
 
     def set(self, group: int, index: int, raw: float, value_string: str | None = None) -> None:
+        """SOE handler'in cache'e yazma giris noktasi.
+
+        Her yazma dirty=True isaretler. OpenDNP3 SOE callback'i sadece sunlarda
+        cagrilir:
+          * Class 1/2/3 event scan: sadece outstation'in event buffer'inda
+            biriken (= degisen) noktalar. Yani buradan gelen her sey zaten
+            "degisim" demek.
+          * Class 0 baseline scan: tum statik noktalar (degisiklik fark etmez,
+            tam snapshot). Bu seyrek (default 30sn) ve frontend'in bir noktayi
+            kaybetmesi (DB retention, ws drop, container restart) durumunda
+            tek garanti yenileme yoludur.
+          * AssignClassDuringStartup integrity poll: link acilir acilmaz tum
+            noktalar.
+
+        Onceki davranisimda "ayni deger ise dirty=False" yapiyordum;
+        Class 0 baseline'da bu, gercekten degismeyen sinyallerin DB'ye
+        hic yazilmamasina yol acti -> frontend'de sutunlar bos kaldi.
+        Simdi her yazma dirty=True. Yuk hesabi: 7 cihaz x 175 sinyal /
+        30sn baseline = saniyede 41 mesaj toplam — RabbitMQ icin onemsiz."""
         key = (group, index)
         with self._lock:
-            prev = self._values.get(key)
             self._values[key] = (raw, value_string)
             self._last_update_at = time.time()
-            # Ilk yazma veya degisiklik varsa dirty isaretle. Class 0 baseline
-            # tekrar ayni degeri yazarsa dirty olmaz.
-            if prev is None or prev[0] != raw or prev[1] != value_string:
-                self._dirty.add(key)
+            self._dirty.add(key)
 
     def get(self, group: int, index: int) -> tuple[float, str | None] | None:
         with self._lock:
