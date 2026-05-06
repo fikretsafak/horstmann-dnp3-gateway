@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from pydantic import Field
+from urllib.parse import urlparse
+
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -247,8 +249,133 @@ class Settings(BaseSettings):
     # ----- Logging -------------------------------------------------------------
     log_level: str = Field(default="INFO")
     log_format: str = Field(default="text", description="text | json")
-    # True: baslangicta konsola tam token yazilir (.env: SHOW_GATEWAY_TOKEN_ON_START=false maskeli).
-    show_gateway_token_on_start: bool = Field(default=True)
+    # Default FALSE — token konsolda tam metin gozukurse docker logs'ta kalir;
+    # log aggregator'a (ELK, Loki) gidip leak olabilir. Kasitli "false" guvenli.
+    # Ihtiyac halinde .env: SHOW_GATEWAY_TOKEN_ON_START=true ile geri acilabilir.
+    show_gateway_token_on_start: bool = Field(default=False)
+
+    # ----- Backend HTTP client guvenlik ---------------------------------------
+    # Backend config response icin maksimum boyut (10 MB). Ustu raise eder
+    # (memory DoS koruma). Tipik 100 cihaz config'i ~50KB; 10MB cok cok yeterli.
+    backend_response_max_bytes: int = Field(
+        default=10 * 1024 * 1024,
+        ge=64 * 1024,  # min 64KB
+        le=200 * 1024 * 1024,  # max 200MB
+        description="Backend config response max size (DoS koruma)",
+    )
+
+    # ----- Validators ---------------------------------------------------------
+    @field_validator("dnp3_read_strategy")
+    @classmethod
+    def _validate_read_strategy(cls, v: str) -> str:
+        valid = {"event_driven", "direct", "class0", "integrity"}
+        s = (v or "").strip().lower()
+        if s not in valid:
+            raise ValueError(
+                f"DNP3_READ_STRATEGY gecersiz: '{v}'. Gecerli: {sorted(valid)}"
+            )
+        return s
+
+    @field_validator("dnp3_library")
+    @classmethod
+    def _validate_library(cls, v: str) -> str:
+        valid = {"yadnp3", "dnp3py"}
+        s = (v or "").strip().lower()
+        if s not in valid:
+            raise ValueError(
+                f"DNP3_LIBRARY gecersiz: '{v}'. Gecerli: {sorted(valid)}"
+            )
+        return s
+
+    @field_validator("gateway_mode")
+    @classmethod
+    def _validate_gateway_mode(cls, v: str) -> str:
+        valid = {"mock", "dnp3"}
+        s = (v or "").strip().lower()
+        if s not in valid:
+            raise ValueError(
+                f"GATEWAY_MODE gecersiz: '{v}'. Gecerli: {sorted(valid)}"
+            )
+        return s
+
+    @field_validator("log_format")
+    @classmethod
+    def _validate_log_format(cls, v: str) -> str:
+        valid = {"text", "json"}
+        s = (v or "").strip().lower()
+        if s not in valid:
+            raise ValueError(
+                f"LOG_FORMAT gecersiz: '{v}'. Gecerli: {sorted(valid)}"
+            )
+        return s
+
+    @field_validator("log_level")
+    @classmethod
+    def _validate_log_level(cls, v: str) -> str:
+        valid = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+        s = (v or "INFO").strip().upper()
+        if s not in valid:
+            raise ValueError(
+                f"LOG_LEVEL gecersiz: '{v}'. Gecerli: {sorted(valid)}"
+            )
+        return s
+
+    @field_validator("backend_api_url")
+    @classmethod
+    def _validate_backend_url(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("BACKEND_API_URL bos olamaz")
+        try:
+            parsed = urlparse(v.strip())
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError(f"BACKEND_API_URL parse edilemedi: {exc}") from exc
+        if parsed.scheme not in ("http", "https"):
+            raise ValueError(
+                f"BACKEND_API_URL scheme http/https olmali (gelen: '{parsed.scheme}')"
+            )
+        if not parsed.netloc:
+            raise ValueError(f"BACKEND_API_URL hostname icermiyor: '{v}'")
+        return v.strip()
+
+    @field_validator("rabbitmq_url")
+    @classmethod
+    def _validate_rabbitmq_url(cls, v: str) -> str:
+        if not v or not v.strip():
+            raise ValueError("RABBITMQ_URL bos olamaz")
+        try:
+            parsed = urlparse(v.strip())
+        except Exception as exc:  # noqa: BLE001
+            raise ValueError(f"RABBITMQ_URL parse edilemedi: {exc}") from exc
+        if parsed.scheme not in ("amqp", "amqps"):
+            raise ValueError(
+                f"RABBITMQ_URL scheme amqp/amqps olmali (gelen: '{parsed.scheme}')"
+            )
+        return v.strip()
+
+    @model_validator(mode="after")
+    def _validate_production_safeguards(self) -> "Settings":
+        """Production / staging ortaminda guvenlik kontrolleri.
+
+        * TLS verify ZORUNLU — kapatilirsa SystemExit (MITM koruma).
+        * Token MIN length staging=16, production=32 (ensure_credentials_allowed
+          auth katmaninda da kontrol eder; burada bagimsiz double-check).
+        * SHOW_GATEWAY_TOKEN_ON_START production'da kapali olmali — leak riski.
+        """
+        env = (self.app_environment or "development").strip().lower()
+        if env in ("production", "prod", "staging", "stg"):
+            if not self.backend_api_verify_ssl:
+                raise ValueError(
+                    f"GUVENLIK: APP_ENVIRONMENT={env} ortaminda "
+                    "BACKEND_API_VERIFY_SSL=False olamaz (MITM riski). "
+                    "Sertifika sorunu varsa BACKEND_API_CA_PATH ile kendi CA bundle'inizi verin."
+                )
+            if env in ("production", "prod") and self.show_gateway_token_on_start:
+                raise ValueError(
+                    "GUVENLIK: APP_ENVIRONMENT=production'da "
+                    "SHOW_GATEWAY_TOKEN_ON_START=True olamaz (token log'da leak olur). "
+                    "Token'i .env'den dogrulayin."
+                )
+        return self
 
     @property
     def is_mock_mode(self) -> bool:

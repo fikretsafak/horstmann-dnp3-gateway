@@ -27,7 +27,7 @@ from dnp3_gateway.auth import GatewayIdentity, bootstrap_gateway_identity
 from dnp3_gateway.backend import BackendConfigClient, GatewayConfigError
 from dnp3_gateway.config import Settings, settings
 from dnp3_gateway.health_server import GatewayMetrics, start_health_server
-from dnp3_gateway.logging_setup import configure_logging
+from dnp3_gateway.logging_setup import configure_logging, register_secret
 from dnp3_gateway.messaging import Outbox, OutboxRetrier, RabbitPublisher
 from dnp3_gateway.messaging.resilient_publisher import ResilientPublisher
 from dnp3_gateway.poller import run_poll_cycle
@@ -79,9 +79,14 @@ def _print_console_banner(
     print("", flush=True)
 
 
-def _mask_secret(value: str, *, keep: int = 4) -> str:
+def _mask_secret(value: str, *, keep: int = 2) -> str:
+    """Token mask: ilk + son N karakter haric ortayi gizle.
+
+    Default keep=2 (eski 4'ten dusuruldu): 32 karakter token'da bile sadece
+    4 karakter gozukur, brute-force riski yok.
+    """
     v = value.strip()
-    if len(v) <= 2 * keep:
+    if len(v) <= 2 * keep + 2:
         return "***"
     return f"{v[:keep]}...{v[-keep:]}"
 
@@ -214,6 +219,20 @@ def run(current_settings: Settings | None = None) -> int:
     configure_logging(level=cfg.log_level, fmt=cfg.log_format)
 
     identity = bootstrap_gateway_identity(settings=cfg, app_version=__version__)
+    # Sirli verileri (token, rabbitmq parolasi vb.) log redaction listesine
+    # kaydet — boylece exception/3rd party log'lara kazara sizmasin. Bu
+    # cagri configure_logging SONRASI yapilmali (filter aktif olduktan).
+    try:
+        register_secret(identity.token)
+        # RabbitMQ URL parolasini ayikla (amqp://user:PASSWORD@host)
+        from urllib.parse import urlparse as _urlparse
+
+        _rmq_parsed = _urlparse(cfg.rabbitmq_url)
+        if _rmq_parsed.password:
+            register_secret(_rmq_parsed.password)
+    except Exception:  # noqa: BLE001
+        # Secret kayit hatasi gateway'i durdurmamali
+        pass
     # Konsola (stdout): log seviyesinden bagimsiz; kurulumda token eslemesini dogrulamak icin.
     if cfg.show_gateway_token_on_start:
         print(f"[dnp3-gateway] GATEWAY_TOKEN={identity.token}", flush=True)
@@ -336,6 +355,7 @@ def run(current_settings: Settings | None = None) -> int:
         identity=identity,
         timeout_sec=cfg.config_timeout_sec,
         verify=_tls_verify_param(cfg),
+        response_max_bytes=cfg.backend_response_max_bytes,
     )
 
     refresh_thread = Thread(

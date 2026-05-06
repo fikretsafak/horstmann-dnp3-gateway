@@ -145,6 +145,22 @@ def _rewrite_loopback_ip(ip: str, *, enabled: bool) -> str:
     return ip
 
 
+# Backend config response icin maksimum boyut. Backend bug yapip 100MB
+# garbage JSON donerse memory'de tutmaya calisirken OOM olabilir; bu sinir
+# defensive korumadir. 10MB tipik 100 cihaz config'i icin (~50KB) cok cok
+# yeterli.
+DEFAULT_RESPONSE_MAX_BYTES = 10 * 1024 * 1024
+
+
+def _scrub_token_from_text(text: str, token: str | None) -> str:
+    """Hata mesajinda token tam metin olarak gorunmesin diye redaction."""
+    if not token or len(token) < 6:
+        return text
+    # Tam token varsa ***REDACTED*** ile yer degistir; boylece exception
+    # log'larina yansimaz
+    return text.replace(token, "***REDACTED***")
+
+
 class BackendConfigClient:
     """HTTP client: `X-Gateway-Token` + tanimli kimlik basliklari ile auth."""
 
@@ -156,11 +172,13 @@ class BackendConfigClient:
         timeout_sec: int = 5,
         session: requests.Session | None = None,
         verify: bool | str = True,
+        response_max_bytes: int = DEFAULT_RESPONSE_MAX_BYTES,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.identity = identity
         self.gateway_code = identity.gateway_code
         self.timeout_sec = timeout_sec
+        self._response_max_bytes = max(64 * 1024, int(response_max_bytes))
         self._session = session or requests.Session()
         if session is None:
             self._session.verify = verify  # type: ignore[assignment]
@@ -169,19 +187,80 @@ class BackendConfigClient:
         url = f"{self.base_url}/gateways/{self.gateway_code}/config"
         headers = build_config_request_headers(self.identity)
         try:
-            response = self._session.get(url, headers=headers, timeout=self.timeout_sec)
+            # stream=True: body'i hemen okuma; Content-Length header'i kontrol
+            # edilebilsin. response.content ile sonra gercek body okunur.
+            response = self._session.get(
+                url,
+                headers=headers,
+                timeout=self.timeout_sec,
+                stream=True,
+            )
         except requests.RequestException as exc:
-            raise GatewayConfigError(f"config request failed: {exc}") from exc
+            # Token leak'i onle: requests bazen URL'i log'a yazabilir (header'da
+            # token gozukmez ama defansif).
+            err_text = _scrub_token_from_text(str(exc), self.identity.token)
+            raise GatewayConfigError(f"config request failed: {err_text}") from exc
 
-        if response.status_code != 200:
+        # Content-Length kontrolu — backend cok buyuk response gonderirse erken
+        # kestir
+        try:
+            content_length = int(response.headers.get("Content-Length", "0") or "0")
+        except (TypeError, ValueError):
+            content_length = 0
+        if content_length > self._response_max_bytes:
+            try:
+                response.close()
+            except Exception:  # noqa: BLE001
+                pass
             raise GatewayConfigError(
-                f"config request returned {response.status_code}: {response.text[:200]}"
+                f"config response too large: content_length={content_length} bytes "
+                f"(limit={self._response_max_bytes})"
             )
 
+        if response.status_code != 200:
+            # Body'i kucuk parca al (token leak/preview icin az miktar yeterli)
+            try:
+                preview_bytes = response.raw.read(2048, decode_content=True)
+                preview = preview_bytes.decode("utf-8", errors="replace")
+            except Exception:  # noqa: BLE001
+                preview = ""
+            preview = _scrub_token_from_text(preview[:200], self.identity.token)
+            raise GatewayConfigError(
+                f"config request returned {response.status_code}: {preview}"
+            )
+
+        # Body'i sinirli okuma: max_bytes'i asarsa raise
         try:
-            data: dict[str, Any] = response.json()
-        except ValueError as exc:
+            chunks: list[bytes] = []
+            total = 0
+            for chunk in response.iter_content(chunk_size=64 * 1024, decode_unicode=False):
+                if not chunk:
+                    continue
+                total += len(chunk)
+                if total > self._response_max_bytes:
+                    raise GatewayConfigError(
+                        f"config response exceeded limit during streaming: "
+                        f"received={total} bytes limit={self._response_max_bytes}"
+                    )
+                chunks.append(chunk)
+            body_bytes = b"".join(chunks)
+        except GatewayConfigError:
+            raise
+        except requests.RequestException as exc:
+            err_text = _scrub_token_from_text(str(exc), self.identity.token)
+            raise GatewayConfigError(f"config response read failed: {err_text}") from exc
+
+        try:
+            import json as _json
+
+            data: dict[str, Any] = _json.loads(body_bytes.decode("utf-8"))
+        except (UnicodeDecodeError, ValueError) as exc:
             raise GatewayConfigError(f"config response is not json: {exc}") from exc
+
+        if not isinstance(data, dict):
+            raise GatewayConfigError(
+                f"config response root must be object, got {type(data).__name__}"
+            )
 
         return _parse_gateway_config(data, default_gateway_code=self.gateway_code)
 
