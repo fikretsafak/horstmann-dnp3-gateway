@@ -87,28 +87,30 @@ class _DeviceCache:
     def set(self, group: int, index: int, raw: float, value_string: str | None = None) -> None:
         """SOE handler'in cache'e yazma giris noktasi.
 
-        Her yazma dirty=True isaretler. OpenDNP3 SOE callback'i sadece sunlarda
-        cagrilir:
-          * Class 1/2/3 event scan: sadece outstation'in event buffer'inda
-            biriken (= degisen) noktalar. Yani buradan gelen her sey zaten
-            "degisim" demek.
-          * Class 0 baseline scan: tum statik noktalar (degisiklik fark etmez,
-            tam snapshot). Bu seyrek (default 30sn) ve frontend'in bir noktayi
-            kaybetmesi (DB retention, ws drop, container restart) durumunda
-            tek garanti yenileme yoludur.
-          * AssignClassDuringStartup integrity poll: link acilir acilmaz tum
-            noktalar.
+        Mantik (saf event-driven):
+          * Ilk yazma (prev is None): dirty=True. Bu durum SADECE startup
+            integrity poll (Class 0+1+2+3) sirasinda olusur — her sinyal icin
+            bir kez. Yani frontend "snapshot"i ilk bagi kuruldugunda alir.
+          * Sonraki yazma, deger DEGISTIYSE: dirty=True. Bu durum Class 1/2/3
+            event scan'inden gelir — outstation event buffer'inda ne biriktiyse.
+          * Sonraki yazma, deger AYNIYSA: dirty=False. Class 0 baseline scan
+            (drift safety, default 30sn) ayni degeri tekrar yazsa bile yayin
+            tetiklenmez. Boylece RabbitMQ + tag-engine + DB sadece gercek
+            degisikliklerle mesgul olur. SCADA standart davranisi.
 
-        Onceki davranisimda "ayni deger ise dirty=False" yapiyordum;
-        Class 0 baseline'da bu, gercekten degismeyen sinyallerin DB'ye
-        hic yazilmamasina yol acti -> frontend'de sutunlar bos kaldi.
-        Simdi her yazma dirty=True. Yuk hesabi: 7 cihaz x 175 sinyal /
-        30sn baseline = saniyede 41 mesaj toplam — RabbitMQ icin onemsiz."""
+        Onceki "her yazma dirty" mantigim Class 0 baseline 30sn'de bir 1225
+        sinyali tekrar tekrar yayinliyordu — gereksiz yuk. Simdi:
+          - Bagi acilis: 1225 publish (snapshot integrity poll)
+          - Sonra: sadece degisen sinyaller (ortalama 0-5 / cycle)
+          - Class 0 30sn'de bir cagrilir, %99 vakitte ayni deger -> 0 publish
+        """
         key = (group, index)
         with self._lock:
+            prev = self._values.get(key)
             self._values[key] = (raw, value_string)
             self._last_update_at = time.time()
-            self._dirty.add(key)
+            if prev is None or prev[0] != raw or prev[1] != value_string:
+                self._dirty.add(key)
 
     def get(self, group: int, index: int) -> tuple[float, str | None] | None:
         with self._lock:
@@ -314,9 +316,18 @@ class _ManagedMaster:
         self._master = self._channel.AddMaster(
             f"m_{device.code}", self._soe, self._app, cfg
         )
-        # Periyodik scan'ler — event-driven cache guncellemesi:
-        #   - Class 1/2/3 (event) sik (her scan_interval_sec)
-        #   - Class 0 (statik baseline) seyrek (baseline_interval_sec)
+        # Saf event-driven mimari:
+        #   1) BAGLANTI ANINDA: AssignClassDuringStartup=True ile OpenDNP3
+        #      otomatik integrity poll (Class 0+1+2+3 hepsi) tetikler. Tum
+        #      sinyaller bir kez cache'e yazilir, ilk snapshot olusur.
+        #   2) SONRASI: Class 1/2/3 event scan SIK (her scan_interval_sec).
+        #      Outstation bir nokta degistiginde event buffer'a yazar; master
+        #      bu buffer'i okur, SOE handler degisen noktalari cache'e ister,
+        #      dirty isaretler. Degismeyen sinyaller olduklari yerde durur.
+        #   3) Class 0 baseline scan COK SEYREK (drift kontrolu, default 5dk).
+        #      Tum statik noktalari yeniden okur — ama _DeviceCache.set() icin
+        #      degeri degismemisse dirty=False, publish edilmez. Sadece kalite
+        #      drift'i / kaybolan event'lerin telafisi icin guvenlik agi.
         self._scan_event = self._master.AddClassScan(
             opendnp3.ClassField(False, True, True, True),  # 1+2+3
             opendnp3.TimeDuration.Seconds(self._scan_interval_sec),
@@ -324,7 +335,7 @@ class _ManagedMaster:
             opendnp3.TaskConfig.Default(),
         )
         self._scan_class0 = self._master.AddClassScan(
-            opendnp3.ClassField(True, False, False, False),  # 0
+            opendnp3.ClassField(True, False, False, False),  # 0 (drift safety)
             opendnp3.TimeDuration.Seconds(self._baseline_interval_sec),
             self._soe,
             opendnp3.TaskConfig.Default(),
