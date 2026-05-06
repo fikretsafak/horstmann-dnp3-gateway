@@ -80,6 +80,9 @@ class _DeviceCache:
         self._dirty: set[tuple[int, int]] = set()
         self._connected = False
         self._last_update_at: float = 0.0
+        # Cihaz stale/disconnected oldugunda comm_lost yayinini SADECE bir kez
+        # yapmak icin edge-trigger flag'i. read_device set/clear eder.
+        self._stale_announced: bool = False
 
     def set(self, group: int, index: int, raw: float, value_string: str | None = None) -> None:
         key = (group, index)
@@ -410,32 +413,45 @@ class Yadnp3TelemetryReader(TelemetryReader):
         # turde TCP kopmasinda tetiklenmeyebilir (channel auto-retry icin
         # session ayakta gorunmeye devam edebilir). Bu yuzden link flag'ine
         # ek olarak "son frame'den bu yana gecen sure" kontrolune da bakariz.
-        # Threshold = max(2*baseline, 3*scan, 30s) — cihazdan beklenen poll
-        # ritminin bir kac katini gecince kesin kopuk sayariz.
+        # Threshold = max(4*baseline, 10*scan, 60s) — cok agresif olursa
+        # baseline scan'in dogal jitter'inde bile false comm_lost uretir
+        # (60sn'lik scan icin 60sn threshold sik tetikliyordu). 4x daha
+        # tolerans birakir; gercekten kopuk cihaz icin yine de 2 dakika
+        # icinde tetiklenir.
         threshold = max(
-            self._baseline_interval_sec * 2,
-            self._scan_interval_sec * 3,
-            30,
+            self._baseline_interval_sec * 4,
+            self._scan_interval_sec * 10,
+            60,
         )
         last_update = cache.last_update_at()
         now = time.time()
         stale = last_update == 0.0 or (now - last_update) > threshold
 
-        # Bagi koptu/kopuk veya veri eski: TUM sinyaller 'comm_lost' kalitesinde
-        # yayinlanir. Frontend bu kalitedeki cihazi "haberlesme yok" olarak
-        # gosterir; canli sinyal sayfasinda quality "bad" donmesi icin de
-        # device.communicationStatus collector'da downstream tarafindan
-        # comm_lost sinyallerine bakilarak set edilir.
+        # Bagi koptu/kopuk veya veri eski: comm_lost yayini. ANCAK, yayini
+        # SADECE EDGE'de (ilk gecis) yapariz — sonraki cycle'larda no_change
+        # doneriz ki frontend "cihaz kopuyor-iyiyor" flap gormesin ve
+        # RabbitMQ'ya 175 sinyal x N cycle flood olmasin. State, cache'in
+        # _stale_announced flag'inde tutulur.
         if not connected or stale:
             if connected and stale:
-                logger.warning(
-                    "yadnp3_device_stale device=%s ip=%s last_data_age=%ds threshold=%ds "
-                    "(link kopmadi gozukuyor ama veri eskidi - comm_lost yayinlaniyor)",
-                    device.code,
-                    device.ip_address,
-                    int(now - last_update) if last_update else -1,
-                    threshold,
-                )
+                # Tek sefer warning log; flag set olunca surekli logu kestirir.
+                if not getattr(cache, "_stale_announced", False):
+                    logger.warning(
+                        "yadnp3_device_stale device=%s ip=%s last_data_age=%ds threshold=%ds "
+                        "(link kopmadi gozukuyor ama veri eskidi - comm_lost yayinlaniyor)",
+                        device.code,
+                        device.ip_address,
+                        int(now - last_update) if last_update else -1,
+                        threshold,
+                    )
+            # Sadece daha once stale/disconnected bildirimini yapmadiysak
+            # bu cycle'da comm_lost yay; sonrakilerde no_change doneriz.
+            already_announced = getattr(cache, "_stale_announced", False)
+            try:
+                cache._stale_announced = True  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001
+                pass
+            quality_to_emit = "no_change" if already_announced else "comm_lost"
             return [
                 SignalReading(
                     signal_key=s.key,
@@ -443,11 +459,26 @@ class Yadnp3TelemetryReader(TelemetryReader):
                     data_type=s.data_type,
                     raw_value=0.0,
                     scaled_value=0.0,
-                    quality="comm_lost",
+                    quality=quality_to_emit,
                     value_string=None,
                 )
                 for s in signals
             ]
+
+        # Cihaz tekrar saglikli — eger daha onceden stale_announced=True
+        # idiyse simdi recovery yayini icin flag'i temizle. Cache'deki
+        # mevcut entry'lerin dirty flag'i zaten Class 0 baseline ile
+        # taze ayarlandi, bu yuzden dogal olarak sinyaller publish edilir.
+        if getattr(cache, "_stale_announced", False):
+            try:
+                cache._stale_announced = False  # type: ignore[attr-defined]
+            except Exception:  # noqa: BLE001
+                pass
+            logger.info(
+                "yadnp3_device_recovered device=%s ip=%s",
+                device.code,
+                device.ip_address,
+            )
 
         readings: list[SignalReading] = []
         for s in signals:
