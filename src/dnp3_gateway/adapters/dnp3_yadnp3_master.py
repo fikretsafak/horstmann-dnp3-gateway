@@ -277,9 +277,15 @@ class _ManagedMaster:
         # Outstation unsolicited frame'leri SOE handler tarafindan dogal islenir;
         # disable etmiyoruz (kucuk mesaj ek yuk yok).
         cfg.master.disableUnsolOnStartup = False
-        cfg.master.responseTimeout = opendnp3.TimeDuration.Seconds(10)
-        cfg.master.taskRetryPeriod = opendnp3.TimeDuration.Seconds(5)
-        cfg.master.maxTaskRetryPeriod = opendnp3.TimeDuration.Minutes(1)
+        # responseTimeout: cihazin tek bir cevabi icin maksimum bekleme. 5sn,
+        # yavas cihazda bile yetmesi gereken bir alt-sinir; daha kisa olursa
+        # zayif TCP'lerde gereksiz timeout uretir.
+        cfg.master.responseTimeout = opendnp3.TimeDuration.Seconds(5)
+        # taskRetryPeriod: bir scan task'i basarisiz olursa ilk retry beklemesi.
+        # 5sn -> 2sn yapmak ilk integrity poll'unun (Class 0) gec gelmesinin
+        # onune gecer; cihaz baglandiktan sonra ilk veri 2sn'de cache'e yazilir.
+        cfg.master.taskRetryPeriod = opendnp3.TimeDuration.Seconds(2)
+        cfg.master.maxTaskRetryPeriod = opendnp3.TimeDuration.Seconds(30)
         cfg.link.LocalAddr = int(local_address)
         cfg.link.RemoteAddr = int(device.dnp3_address)
         self._master = self._channel.AddMaster(
