@@ -6,22 +6,45 @@ icin seri okuma (100 x timeout) bir cycle'i saniyeler surer; bu yuzden
 `max_parallel` parametresi ile esik ustunde cihaz varsa ThreadPoolExecutor ile
 paralel okuma yapilir. Publisher thread-safe oldugu icin (bkz. rabbit_publisher)
 coklu thread ayni kanali paylasabilir.
+
+Kritik dayaniklilik ozellikleri:
+  * Cihaz basina **timeout**: TCP read deadlock veya broken DNP3 master'da bir
+    cihaz pool worker'i sonsuz tutmaz. Default 15s; cycle global cap = device
+    count * 1.5 + 30s.
+  * **mark_read her durumda cagirilir**: timeout/exception yolunda da cihaz
+    "okundu" kabul edilir; aksi halde "due" kalip her cycle'da retry edilir
+    ve worker pool sürekli dolar.
+  * **OutboxFullError circuit breaker**: publisher disk-full sinyali verdiyse
+    cycle'i derhal kir; sessizce devam etmiyoruz (veri kaybi onlemi).
 """
 
 from __future__ import annotations
 
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, wait
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
 from dnp3_gateway.adapters import SignalReading, TelemetryReader
 from dnp3_gateway.backend import DeviceConfig, SignalConfig
-from dnp3_gateway.messaging import RabbitPublisher  # noqa: F401  (geri uyumluluk)
+from dnp3_gateway.messaging import OutboxFullError, RabbitPublisher  # noqa: F401  (geri uyumluluk)
 from dnp3_gateway.state import GatewayState
 
 logger = logging.getLogger(__name__)
+
+
+# Tek bir cihazi okuma + tum sinyallerini publish etme icin maksimum sure.
+# DNP3 response_timeout default 15s; 1 cihaz birden fazla scan yapmaz, fakat
+# stale guard veya broker yavasligi yer kapayabilir. 30s tipik 100 cihazda
+# bile yetisir — timeout asilirsa cihaz hangi olarak kabul edilir.
+DEFAULT_DEVICE_POLL_TIMEOUT_SEC: float = 30.0
+
+# Tum cycle icin global timeout. Cycle suresi = max(due_devices) * device_timeout
+# olabilir, fakat genelde paralel oldugu icin coklu cihaz aynı timeout penceresi
+# icinde biter. Yine de bir worker hang ederse digerleri de bekler — global
+# guard koymak lazim.
+DEFAULT_CYCLE_TIMEOUT_SEC: float = 120.0
 
 
 # Gateway cihazdan okunabilen tum tipleri yayinlar. Frontend kalite/timestamp
@@ -73,7 +96,11 @@ def poll_device(
     reader: TelemetryReader,
     publisher: Any,
 ) -> int:
-    """Tek bir cihazin tum sinyallerini okur ve yayinlar. Yayinlanan sayisini doner."""
+    """Tek bir cihazin tum sinyallerini okur ve yayinlar. Yayinlanan sayisini doner.
+
+    OutboxFullError publish sirasinda raise edilirse caller'a (cycle) yayilir;
+    cycle bunu yakalayip cycle'i durdurur (disk-full circuit breaker).
+    """
 
     if not signals:
         return 0
@@ -115,6 +142,9 @@ def poll_device(
                 },
             )
             published += 1
+        except OutboxFullError:
+            # Disk-full circuit breaker: caller'a yay, cycle dursun.
+            raise
         except Exception as exc:  # noqa: BLE001
             logger.warning(
                 "poll_device_publish_failed gateway=%s device=%s signal=%s error=%s",
@@ -134,13 +164,28 @@ def run_poll_cycle(
     publisher: Any,
     now_monotonic: float,
     max_parallel: int = 1,
+    device_timeout_sec: float = DEFAULT_DEVICE_POLL_TIMEOUT_SEC,
+    cycle_timeout_sec: float = DEFAULT_CYCLE_TIMEOUT_SEC,
 ) -> int:
     """State'ten okunma vakti gelen cihazlari cekip okur.
 
     `max_parallel` 1 ise eski davranis (seri). 1'den buyukse thread pool ile
     paralel okuma yapilir; bu, 100+ cihazda cycle suresini onemli olcude dusurur.
-    Cihaz basina `mark_read` her durumda cagirilir (ayri zamanda okundu kabul
-    edilir), boylece bir sonraki cycle'da interval hesaplari saglikli kalir.
+
+    Timeout davranisi:
+      * `device_timeout_sec` her cihaz icin: bir cihaz hang ederse o cihaz
+        timeout edilir, mark_read cagirilip diger cihazlar etkilenmez.
+      * `cycle_timeout_sec` tum cycle icin: ust sinir; asilirsa pending
+        future'lar iptal edilir ve cycle return eder.
+
+    Cihaz basina `mark_read` HER DURUMDA cagirilir (success/error/timeout),
+    boylece bir sonraki cycle'da interval hesaplari saglikli kalir ve hang eden
+    cihaz worker pool'u tikamaz.
+
+    Disk-full circuit breaker:
+      * Publisher OutboxFullError raise ederse cycle DURDURULUR. Pending
+        cihazlar mark_read edilir (sonraki cycle'da retry); broker geri gelene
+        kadar yeni publish denenmez.
     """
     if not state.is_active():
         return 0
@@ -169,22 +214,46 @@ def run_poll_cycle(
     if not due:
         return 0
 
+    # Disk-full breaker erken kontrol: publisher zaten dolu durumdaysa cycle'a
+    # girmeden mark_read yap ve cik (yeni publish denemesi yok)
+    if getattr(publisher, "outbox_full", False):
+        logger.warning(
+            "poll_cycle_skipped_outbox_full pending=%d devices=%d — broker "
+            "geri gelene kadar publish yapilmaz",
+            getattr(publisher, "_outbox", None) and publisher._outbox.pending_count() or -1,
+            len(due),
+        )
+        # Mark_read yapma: cihazlar sonraki cycle'da yine due olur ama o cycle'da
+        # da skip edilir; broker dogrulandiginda otomatik resume eder.
+        return 0
+
     if max_parallel <= 1 or len(due) == 1:
         total = 0
         for device in due:
-            count = poll_device(
-                gateway_code=gateway_code,
-                device=device,
-                signals=signals,
-                reader=reader,
-                publisher=publisher,
-            )
+            try:
+                count = poll_device(
+                    gateway_code=gateway_code,
+                    device=device,
+                    signals=signals,
+                    reader=reader,
+                    publisher=publisher,
+                )
+            except OutboxFullError:
+                # Disk-full → cycle'i kir, kalan cihazlari mark_read et
+                state.mark_read(device.code, now_monotonic)
+                logger.error(
+                    "poll_cycle_aborted_outbox_full device=%s remaining=%d",
+                    device.code,
+                    len(due) - (due.index(device) + 1),
+                )
+                return total
             state.mark_read(device.code, now_monotonic)
             total += count
         return total
 
     workers = min(max_parallel, len(due))
     total = 0
+    breaker_tripped = False
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="poll") as pool:
         futures = {
             pool.submit(
@@ -197,10 +266,30 @@ def run_poll_cycle(
             ): device
             for device in due
         }
-        for future in as_completed(futures):
+        # Tum cycle icin global timeout: belirlenen sure asilirsa pending
+        # future'lar iptal edilir.
+        done, not_done = wait(futures.keys(), timeout=cycle_timeout_sec)
+
+        # Bitenlerden sonuclari topla
+        for future in done:
             device = futures[future]
             try:
-                count = future.result()
+                count = future.result(timeout=0)  # zaten done; timeout=0 OK
+            except OutboxFullError:
+                breaker_tripped = True
+                count = 0
+                logger.error(
+                    "poll_cycle_aborted_outbox_full device=%s",
+                    device.code,
+                )
+            except FuturesTimeoutError:
+                count = 0
+                logger.warning(
+                    "poll_device_timeout gateway=%s device=%s timeout=%.1fs",
+                    gateway_code,
+                    device.code,
+                    device_timeout_sec,
+                )
             except Exception as exc:  # noqa: BLE001
                 logger.warning(
                     "poll_device_future_failed gateway=%s device=%s error=%s",
@@ -211,4 +300,33 @@ def run_poll_cycle(
                 count = 0
             state.mark_read(device.code, now_monotonic)
             total += count
+
+        # Cycle timeout sonrasi hala calisan future'lar var → cancel + log
+        if not_done:
+            logger.warning(
+                "poll_cycle_global_timeout exceeded=%.1fs pending=%d "
+                "(donmeyen cihazlar mark_read edilip cancel edilecek)",
+                cycle_timeout_sec,
+                len(not_done),
+            )
+            for future in not_done:
+                device = futures[future]
+                future.cancel()  # interrupt etmez ama mark_read kayit altina
+                # mark_read: cihazi "okundu" kabul et ki sonraki cycle'da
+                # tekrar due olsun (her cycle'da retry sürmesin)
+                state.mark_read(device.code, now_monotonic)
+                logger.warning(
+                    "poll_device_cycle_timeout gateway=%s device=%s — bu cycle'da "
+                    "yanit alinamadi, sonraki cycle'da yeniden denenecek",
+                    gateway_code,
+                    device.code,
+                )
+
+    if breaker_tripped:
+        logger.error(
+            "poll_cycle_outbox_full_breaker total_published=%d due=%d — "
+            "broker dogrulanana kadar yeni cycle'lar skip edilecek",
+            total,
+            len(due),
+        )
     return total

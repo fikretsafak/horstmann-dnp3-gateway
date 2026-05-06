@@ -217,21 +217,33 @@ def run(current_settings: Settings | None = None) -> int:
     )
     # Outbox: RabbitMQ erisilemezse mesajlari diske yaz, retrier sonra gonderir.
     # Process restart'a dayanikli (kalici SQLite); at-least-once delivery.
+    # Disk-full koruma: max_pending asilirsa publisher OutboxFullError raise
+    # eder, poller cycle'i durdurur.
     outbox_path = Path(cfg.gateway_state_dir) / f"outbox_{identity.gateway_code}.db"
-    outbox = Outbox(outbox_path)
+    outbox = Outbox(outbox_path, max_pending=cfg.outbox_max_pending)
     pending = outbox.pending_count()
+    dead_letter_count = outbox.dead_letter_count()
     if pending:
         logger.warning(
             "outbox_pending_messages count=%s db=%s — retrier hizla bosaltacak",
             pending,
             outbox_path,
         )
+    if dead_letter_count:
+        logger.warning(
+            "outbox_dead_letter_count count=%s — manuel inceleme gerekebilir "
+            "(SELECT * FROM outbox_dead_letter ORDER BY moved_at DESC)",
+            dead_letter_count,
+        )
     publisher = ResilientPublisher(broker=broker, outbox=outbox)
     retrier = OutboxRetrier(
         outbox,
         publish_fn=publisher.publish_outbox_row,
-        poll_interval_sec=2.0,
-        batch_size=200,
+        poll_interval_sec=cfg.outbox_retrier_poll_interval_sec,
+        batch_size=cfg.outbox_retrier_batch_size,
+        max_retries=cfg.outbox_max_retries,
+        min_backoff_sec=cfg.outbox_retrier_min_backoff_sec,
+        max_backoff_sec=cfg.outbox_retrier_max_backoff_sec,
     )
     retrier.start()
 
@@ -297,6 +309,8 @@ def run(current_settings: Settings | None = None) -> int:
                 publisher=publisher,
                 now_monotonic=now_monotonic,
                 max_parallel=cfg.max_parallel_devices,
+                device_timeout_sec=cfg.device_poll_timeout_sec,
+                cycle_timeout_sec=cfg.cycle_timeout_sec,
             )
             if due_count or published:
                 metrics.record_cycle(devices=due_count, published=published)
@@ -312,29 +326,70 @@ def run(current_settings: Settings | None = None) -> int:
     except KeyboardInterrupt:
         logger.info("dnp3_gateway_interrupted")
     finally:
+        # Graceful shutdown — kaynaklarin sirayla ve guvenli sekilde
+        # kapatilmasi. Her bir adim try/except ile koruma altinda; bir
+        # adimda hata olursa sonraki adim yine calisir, tum kaynak temizlenir.
         logger.info("dnp3_gateway_shutdown_starting")
         stop_event.set()
+
+        # 1) Config refresh thread: stop_event set, thread'in mevcut wait()
+        # sonlanir; join ile gerçekten bittigini bekle. Daemon=True olsa bile
+        # join edilirse temiz cikis garantilenir.
+        try:
+            if refresh_thread.is_alive():
+                refresh_thread.join(timeout=5.0)
+                if refresh_thread.is_alive():
+                    logger.warning(
+                        "refresh_thread_join_timeout — thread 5s icinde sonlanmadi, "
+                        "shutdown'a devam ediliyor"
+                    )
+        except Exception:  # noqa: BLE001
+            logger.debug("refresh_thread_join_error", exc_info=True)
+
+        # 2) Reader: DNP3 master/channel kapanir, TCP RST gonderir
         try:
             reader.close()
         except Exception:  # noqa: BLE001
             logger.debug("reader_close_error", exc_info=True)
+
+        # 3) OutboxRetrier: bg thread durur, in-flight publish'in bitmesini
+        # bekler (timeout 3s)
         try:
-            retrier.stop()
+            retrier.stop(timeout_sec=3.0)
         except Exception:  # noqa: BLE001
             logger.debug("retrier_stop_error", exc_info=True)
-        publisher.close()
+
+        # 4) RabbitPublisher: connection/channel kapanir
+        try:
+            publisher.close()
+        except Exception:  # noqa: BLE001
+            logger.debug("publisher_close_error", exc_info=True)
+
+        # 5) Health HTTP server: yeni baglantilari reddeder ve in-flight
+        # request'lerin bitmesini bekler
         try:
             health.shutdown()
             health.server_close()
         except Exception:  # noqa: BLE001
             logger.debug("health_server_shutdown_error", exc_info=True)
-        pending = outbox.pending_count()
-        if pending:
-            logger.warning(
-                "shutdown_pending_outbox count=%s db=%s — sonraki baslangicta gonderilecek",
-                pending,
-                outbox_path,
-            )
+
+        # 6) Final durum raporu
+        try:
+            pending = outbox.pending_count()
+            dl_count = outbox.dead_letter_count()
+            if pending:
+                logger.warning(
+                    "shutdown_pending_outbox count=%s db=%s — sonraki baslangicta gonderilecek",
+                    pending,
+                    outbox_path,
+                )
+            if dl_count:
+                logger.warning(
+                    "shutdown_dead_letter count=%s — operator inceleyebilir",
+                    dl_count,
+                )
+        except Exception:  # noqa: BLE001
+            logger.debug("outbox_count_error", exc_info=True)
         logger.info("dnp3_gateway_stopped")
     return 0
 

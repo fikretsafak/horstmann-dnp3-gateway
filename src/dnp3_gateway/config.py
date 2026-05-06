@@ -87,6 +87,23 @@ class Settings(BaseSettings):
     # ----- Polling davranisi ---------------------------------------------------
     default_poll_interval_sec: int = Field(default=5, ge=1, le=3600)
     max_parallel_devices: int = Field(default=25, ge=1, le=500)
+    # Tek bir cihaz okuma + publish icin maksimum sure (sn). Bu sureyi asarsa
+    # cihaz "timeout" kabul edilir, mark_read cagirilir, diger cihazlar
+    # etkilenmez. 100+ cihazda 1-2 hangat olan cihaz tum cycle'i bloke etmesin.
+    device_poll_timeout_sec: float = Field(
+        default=30.0,
+        ge=1.0,
+        le=600.0,
+        description="Tek cihaz icin poll+publish maksimum sure (sn)",
+    )
+    # Tum cycle (paralel due_devices) icin global timeout. Uygulama default
+    # device_timeout * sqrt(devices) ya da bu sabit; hangisi buyuk.
+    cycle_timeout_sec: float = Field(
+        default=120.0,
+        ge=10.0,
+        le=3600.0,
+        description="Bir poll cycle'in (paralel) maksimum suresi (sn)",
+    )
     # Container icinde calisirken cihaz IP'si "127.0.0.1" / "localhost" /
     # "0.0.0.0" olarak gelmisse host'a (host.docker.internal) cevir. Cati
     # yazilim + simulator + gateway ayni Windows host'unda calisirken bu
@@ -94,6 +111,52 @@ class Settings(BaseSettings):
     rewrite_loopback_to_host: bool = Field(
         default=True,
         description="Device IP loopback ise host.docker.internal'a cevirilsin mi",
+    )
+
+    # ----- Outbox / messaging dayaniklilik -----------------------------------
+    outbox_max_pending: int = Field(
+        default=500_000,
+        ge=1_000,
+        le=10_000_000,
+        description=(
+            "Outbox doluluk limiti. Ulasilirsa publisher disk-full circuit "
+            "breaker tetikler ve poll cycle'i durdurur (sessiz veri kaybi yerine "
+            "kontrollu duraklatma). Saniyede ortalama 200 mesaj ile ~40 dakika "
+            "broker outage karsilar."
+        ),
+    )
+    outbox_max_retries: int = Field(
+        default=100,
+        ge=1,
+        le=10_000,
+        description=(
+            "Bir mesaj kac kere yeniden gonderilmeye calisilirsa dead-letter "
+            "tablosuna tasinir (poison message korumasi)."
+        ),
+    )
+    outbox_retrier_min_backoff_sec: float = Field(
+        default=1.0,
+        ge=0.1,
+        le=60.0,
+        description="OutboxRetrier minimum backoff (broker dustugunde ilk bekleme)",
+    )
+    outbox_retrier_max_backoff_sec: float = Field(
+        default=60.0,
+        ge=1.0,
+        le=600.0,
+        description="OutboxRetrier maksimum backoff (broker uzun sure dustugunde cap)",
+    )
+    outbox_retrier_poll_interval_sec: float = Field(
+        default=2.0,
+        ge=0.5,
+        le=60.0,
+        description="OutboxRetrier saglikli durumda batch'ler arasi bekleme",
+    )
+    outbox_retrier_batch_size: int = Field(
+        default=200,
+        ge=1,
+        le=2000,
+        description="Outbox'tan tek seferde alinan mesaj sayisi",
     )
 
     # ----- DNP3 master parametreleri ------------------------------------------
