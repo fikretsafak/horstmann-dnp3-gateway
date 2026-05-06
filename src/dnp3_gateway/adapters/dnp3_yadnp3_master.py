@@ -328,14 +328,22 @@ class _ManagedMaster:
         #      Tum statik noktalari yeniden okur — ama _DeviceCache.set() icin
         #      degeri degismemisse dirty=False, publish edilmez. Sadece kalite
         #      drift'i / kaybolan event'lerin telafisi icin guvenlik agi.
+        # Class 1/2/3 SIK event scan: outstation event buffer'inda biriken
+        # degisimleri toplar. Sub-second yansima icin scan_interval_sec.
         self._scan_event = self._master.AddClassScan(
             opendnp3.ClassField(False, True, True, True),  # 1+2+3
             opendnp3.TimeDuration.Seconds(self._scan_interval_sec),
             self._soe,
             opendnp3.TaskConfig.Default(),
         )
+        # FULL integrity scan (Class 0+1+2+3) periyodik. baseline_interval_sec
+        # de bir tum noktalari outstation'dan tekrar ister. Bunun icin Class 0
+        # tek basina YETMEZ — bazi outstation'lar binary noktalari Class 0'a
+        # dahil etmez (sadece Class 1'e atar). ClassField(True,True,True,True)
+        # tam integrity poll'dur ve TUM noktalari class'tan bagimsiz dondurur.
+        # cache.set degeri degismediyse dirty olmaz -> RabbitMQ'ya yuk vermez.
         self._scan_class0 = self._master.AddClassScan(
-            opendnp3.ClassField(True, False, False, False),  # 0 (drift safety)
+            opendnp3.ClassField(True, True, True, True),  # 0+1+2+3 full integrity
             opendnp3.TimeDuration.Seconds(self._baseline_interval_sec),
             self._soe,
             opendnp3.TaskConfig.Default(),
@@ -343,7 +351,7 @@ class _ManagedMaster:
         self._master.Enable()
         logger.info(
             "yadnp3_master_enabled device=%s mode=%s endpoint=%s remote=%s local=%s "
-            "event_scan=%ss baseline_scan=%ss",
+            "event_scan=%ss integrity_scan=%ss",
             device.code,
             channel_mode,
             channel_endpoint_label,
