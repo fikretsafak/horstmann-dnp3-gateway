@@ -204,7 +204,12 @@ def _make_master_app(cache: _DeviceCache, device_code: str) -> Any:
             logger.info("yadnp3_master_link_close device=%s", device_code)
 
         def AssignClassDuringStartup(self):  # noqa: N802
-            return False
+            # True: OpenDNP3 link acilir acilmaz baslangic integrity poll'u
+            # tetikler (Class 0/1/2/3 hepsini bir kerede toplar). Bu olmadigi
+            # zaman ilk veri scheduled scan'i (baseline 30sn / event 1sn) bek-
+            # liyor; cihaz baglandiktan sonra ilk değerin frontend'e ulaşmasi
+            # 30 sn'ye varabilir. True yapmak ilk veriyi <1sn'ye duşurur.
+            return True
 
         def Now(self):  # noqa: N802
             return opendnp3.DNPTime(int(time.time() * 1000))
