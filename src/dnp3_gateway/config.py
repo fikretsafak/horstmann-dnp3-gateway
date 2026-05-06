@@ -65,6 +65,17 @@ class Settings(BaseSettings):
     )
     config_refresh_sec: int = Field(default=30, ge=5, le=3600)
     config_timeout_sec: int = Field(default=5, ge=1, le=60)
+    config_cache_max_age_hours: float = Field(
+        default=24.0,
+        ge=1.0,
+        le=720.0,
+        description=(
+            "Disk'teki config cache'i kac saatten daha eski olunca 'stale' "
+            "kabul edilir. Backend down kalsa bile gateway eski config ile "
+            "polling'e devam eder, ancak /health endpoint'i 'cache_stale' "
+            "raporlar. Operator backend baglantisini cozmesi icin alarm."
+        ),
+    )
 
     # ----- RabbitMQ ------------------------------------------------------------
     rabbitmq_url: str = Field(default="amqp://guest:guest@localhost:5672/")

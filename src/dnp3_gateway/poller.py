@@ -20,7 +20,9 @@ Kritik dayaniklilik ozellikleri:
 
 from __future__ import annotations
 
+import atexit
 import logging
+import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, wait
 from datetime import datetime, timezone
 from typing import Any
@@ -32,6 +34,56 @@ from dnp3_gateway.messaging import OutboxFullError, RabbitPublisher  # noqa: F40
 from dnp3_gateway.state import GatewayState
 
 logger = logging.getLogger(__name__)
+
+
+# Module-level thread pool: her cycle'da yeniden create/destroy etmek yerine
+# tek pool'u tekrar kullaniriz. 100 cihaz × 5sn cycle = saniyede 12 cycle, eski
+# yontemde her cycle'da 25 thread spawn + teardown = ~600 thread spawn/dakika
+# overhead. Module-level pool'da threadler reuse edilir.
+#
+# Pool atexit'te kapatilir; sentinel olarak 'None' kullaniliyor (lazy init).
+# max_workers ilk kullanan cycle'in max_parallel degeriyle yaratilir; sonraki
+# cycle'larda bu deger artarsa yeni pool olusturulur (rare; SIGHUP tarzi).
+_pool_lock = threading.Lock()
+_pool: ThreadPoolExecutor | None = None
+_pool_max_workers: int = 0
+
+
+def _get_or_create_pool(max_workers: int) -> ThreadPoolExecutor:
+    """Module-level singleton ThreadPoolExecutor. Capacity asilirsa yeni pool."""
+    global _pool, _pool_max_workers
+    with _pool_lock:
+        if _pool is None or max_workers > _pool_max_workers:
+            old_pool = _pool
+            _pool = ThreadPoolExecutor(
+                max_workers=max(1, int(max_workers)),
+                thread_name_prefix="poll",
+            )
+            _pool_max_workers = max(1, int(max_workers))
+            if old_pool is not None:
+                # Eski pool'u kapat (in-flight'larin bitmesini bekleme — yeni
+                # pool kullanilacak, eski thread'ler kendiliginden cikar).
+                # cancel_futures Python 3.9+; safety icin try
+                try:
+                    old_pool.shutdown(wait=False, cancel_futures=True)
+                except TypeError:
+                    old_pool.shutdown(wait=False)
+        return _pool
+
+
+def _shutdown_pool() -> None:
+    """atexit'te modul kapanmadan once pool'u temizle."""
+    global _pool
+    with _pool_lock:
+        if _pool is not None:
+            try:
+                _pool.shutdown(wait=False, cancel_futures=True)
+            except TypeError:
+                _pool.shutdown(wait=False)
+            _pool = None
+
+
+atexit.register(_shutdown_pool)
 
 
 # Tek bir cihazi okuma + tum sinyallerini publish etme icin maksimum sure.
@@ -254,73 +306,75 @@ def run_poll_cycle(
     workers = min(max_parallel, len(due))
     total = 0
     breaker_tripped = False
-    with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="poll") as pool:
-        futures = {
-            pool.submit(
-                poll_device,
-                gateway_code=gateway_code,
-                device=device,
-                signals=signals,
-                reader=reader,
-                publisher=publisher,
-            ): device
-            for device in due
-        }
-        # Tum cycle icin global timeout: belirlenen sure asilirsa pending
-        # future'lar iptal edilir.
-        done, not_done = wait(futures.keys(), timeout=cycle_timeout_sec)
+    # Module-level pool: thread'ler reuse edilir; her cycle'da spawn/destroy
+    # overhead'i yok. Pool capacity yetmezse yeniden create eder.
+    pool = _get_or_create_pool(max_workers=workers)
+    futures = {
+        pool.submit(
+            poll_device,
+            gateway_code=gateway_code,
+            device=device,
+            signals=signals,
+            reader=reader,
+            publisher=publisher,
+        ): device
+        for device in due
+    }
+    # Tum cycle icin global timeout: belirlenen sure asilirsa pending
+    # future'lar iptal edilir.
+    done, not_done = wait(futures.keys(), timeout=cycle_timeout_sec)
 
-        # Bitenlerden sonuclari topla
-        for future in done:
-            device = futures[future]
-            try:
-                count = future.result(timeout=0)  # zaten done; timeout=0 OK
-            except OutboxFullError:
-                breaker_tripped = True
-                count = 0
-                logger.error(
-                    "poll_cycle_aborted_outbox_full device=%s",
-                    device.code,
-                )
-            except FuturesTimeoutError:
-                count = 0
-                logger.warning(
-                    "poll_device_timeout gateway=%s device=%s timeout=%.1fs",
-                    gateway_code,
-                    device.code,
-                    device_timeout_sec,
-                )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "poll_device_future_failed gateway=%s device=%s error=%s",
-                    gateway_code,
-                    device.code,
-                    exc,
-                )
-                count = 0
-            state.mark_read(device.code, now_monotonic)
-            total += count
-
-        # Cycle timeout sonrasi hala calisan future'lar var → cancel + log
-        if not_done:
-            logger.warning(
-                "poll_cycle_global_timeout exceeded=%.1fs pending=%d "
-                "(donmeyen cihazlar mark_read edilip cancel edilecek)",
-                cycle_timeout_sec,
-                len(not_done),
+    # Bitenlerden sonuclari topla
+    for future in done:
+        device = futures[future]
+        try:
+            count = future.result(timeout=0)  # zaten done; timeout=0 OK
+        except OutboxFullError:
+            breaker_tripped = True
+            count = 0
+            logger.error(
+                "poll_cycle_aborted_outbox_full device=%s",
+                device.code,
             )
-            for future in not_done:
-                device = futures[future]
-                future.cancel()  # interrupt etmez ama mark_read kayit altina
-                # mark_read: cihazi "okundu" kabul et ki sonraki cycle'da
-                # tekrar due olsun (her cycle'da retry sürmesin)
-                state.mark_read(device.code, now_monotonic)
-                logger.warning(
-                    "poll_device_cycle_timeout gateway=%s device=%s — bu cycle'da "
-                    "yanit alinamadi, sonraki cycle'da yeniden denenecek",
-                    gateway_code,
-                    device.code,
-                )
+        except FuturesTimeoutError:
+            count = 0
+            logger.warning(
+                "poll_device_timeout gateway=%s device=%s timeout=%.1fs",
+                gateway_code,
+                device.code,
+                device_timeout_sec,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "poll_device_future_failed gateway=%s device=%s error=%s",
+                gateway_code,
+                device.code,
+                exc,
+            )
+            count = 0
+        state.mark_read(device.code, now_monotonic)
+        total += count
+
+    # Cycle timeout sonrasi hala calisan future'lar var → cancel + log
+    if not_done:
+        logger.warning(
+            "poll_cycle_global_timeout exceeded=%.1fs pending=%d "
+            "(donmeyen cihazlar mark_read edilip cancel edilecek)",
+            cycle_timeout_sec,
+            len(not_done),
+        )
+        for future in not_done:
+            device = futures[future]
+            future.cancel()  # interrupt etmez ama mark_read kayit altina
+            # mark_read: cihazi "okundu" kabul et ki sonraki cycle'da
+            # tekrar due olsun (her cycle'da retry sürmesin)
+            state.mark_read(device.code, now_monotonic)
+            logger.warning(
+                "poll_device_cycle_timeout gateway=%s device=%s — bu cycle'da "
+                "yanit alinamadi, sonraki cycle'da yeniden denenecek",
+                gateway_code,
+                device.code,
+            )
 
     if breaker_tripped:
         logger.error(

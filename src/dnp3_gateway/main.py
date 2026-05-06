@@ -94,12 +94,31 @@ def _run_config_refresh(
     stop_event: Event,
     refresh_sec: int,
 ) -> None:
+    """Backend config refresh thread'i. Basarili durumda sabit interval;
+    hata durumunda exponential backoff (`refresh_sec → 2*refresh_sec → ... → 300s cap`).
+
+    401/403/404 hatalarinda spesifik mesaj uretir; bu durumlar genelde manuel
+    duzeltme gerektirir (token degismis, gateway code yanlis vs.) — health
+    endpoint'i `state.last_refresh_error` uzerinden bunu raporlar.
+    """
+    import random
+
     last_active_state: bool | None = None
+    consecutive_failures = 0
+    base_interval = max(5, refresh_sec)
+    max_backoff = 300  # 5 dakika cap
     while not stop_event.is_set():
         try:
             config = client.fetch_config()
             changed = state.update(config)
             config_ready.set()
+            if consecutive_failures:
+                logger.info(
+                    "config_refresh_recovered gateway=%s after_failures=%d",
+                    config.gateway_code,
+                    consecutive_failures,
+                )
+                consecutive_failures = 0
             if changed:
                 logger.info(
                     "config_refresh gateway=%s version=%s devices=%s signals=%s active=%s",
@@ -118,21 +137,55 @@ def _run_config_refresh(
                         "gateway_polling_suspended gateway=%s (is_active=False)",
                         config.gateway_code,
                     )
+            # Saglikli refresh — sabit interval'a don
+            stop_event.wait(timeout=base_interval)
+            continue
         except GatewayConfigError as exc:
             err = str(exc)
-            logger.error("config_refresh_error gateway=%s error=%s", client.gateway_code, exc)
-            if "404" in err:
+            consecutive_failures += 1
+            state.record_refresh_error(err)
+            # 401/403: token problemi — auto-recovery yok, manuel mudahale gerek
+            if "401" in err or "403" in err:
                 logger.error(
-                    "config_404_cozum: Backendde '%s' kodlu gateway yok. "
-                    "Arayüz: Mühendislik → Gateway Yönetimi → ayni Kod + ayni Token ile kayit acin. "
-                    "Veya .env GATEWAY_CODE yanlis.",
+                    "config_auth_error gateway=%s consecutive=%d error=%s "
+                    "— GATEWAY_TOKEN backend gateways.token ile eslesmiyor; "
+                    ".env GATEWAY_TOKEN'i kontrol edin",
+                    client.gateway_code,
+                    consecutive_failures,
+                    err,
+                )
+            elif "404" in err:
+                logger.error(
+                    "config_404_error gateway=%s consecutive=%d "
+                    "— Backendde '%s' kodlu gateway yok. Arayüz: Mühendislik → "
+                    "Gateway Yönetimi → ayni Kod + ayni Token ile kayit acin",
+                    client.gateway_code,
+                    consecutive_failures,
                     client.gateway_code,
                 )
-            elif "401" in err:
-                logger.error(
-                    "config_401_cozum: GATEWAY_TOKEN, backend gateways.token ile eslesmiyor; .env guncelleyin.",
-                )
-        stop_event.wait(timeout=max(5, refresh_sec))
+            else:
+                # Network / 5xx / timeout — geri donusumlu, exponential backoff uygula
+                if consecutive_failures in (1, 5, 30, 100, 1000):
+                    # Sadece 1, 5, 30, 100, 1000 inci hatalarda WARN log; aksi
+                    # halde DEBUG, log spam'i onlenir
+                    logger.warning(
+                        "config_refresh_error gateway=%s consecutive=%d error=%s",
+                        client.gateway_code,
+                        consecutive_failures,
+                        err,
+                    )
+                else:
+                    logger.debug(
+                        "config_refresh_error gateway=%s consecutive=%d error=%s",
+                        client.gateway_code,
+                        consecutive_failures,
+                        err,
+                    )
+        # Exponential backoff: base * 2^n, ±%20 jitter, cap 300s
+        backoff = min(max_backoff, base_interval * (2 ** min(consecutive_failures - 1, 8)))
+        jitter = backoff * random.uniform(-0.2, 0.2)
+        wait_time = max(base_interval, backoff + jitter)
+        stop_event.wait(timeout=wait_time)
 
 
 def _install_signal_handlers(stop_event: Event) -> None:
@@ -184,7 +237,10 @@ def run(current_settings: Settings | None = None) -> int:
     # gordugu config ile (cihaz IP'leri, sinyal listesi, master_address)
     # polling'e devam eder. Yeni config geldiginde uzerine yazilir.
     config_cache_path = Path(cfg.gateway_state_dir) / f"config_{identity.gateway_code}.json"
-    state = GatewayState(cache_path=config_cache_path)
+    state = GatewayState(
+        cache_path=config_cache_path,
+        cache_max_age_hours=cfg.config_cache_max_age_hours,
+    )
     if state.load_from_cache():
         # Disk'te onceki config varsa polling hemen baslayabilir; backend
         # ulasilmazsa bile veri toplama durmaz.
@@ -196,6 +252,14 @@ def run(current_settings: Settings | None = None) -> int:
         config_ready.set()
     stop_event = Event()
 
+    # publisher_holder: health server publisher'a referans tutmasin diye
+    # 0-arglik callable; publisher daha sonra olusturulup buraya yazilir.
+    # Boylece health_server start sonrasi publisher injection olabilir.
+    publisher_holder: dict[str, Any] = {"publisher": None}
+
+    def _publisher_provider() -> Any:
+        return publisher_holder["publisher"]
+
     health, metrics, actual_health_port = start_health_server(
         host=cfg.worker_health_host,
         port=cfg.worker_health_port,
@@ -205,6 +269,7 @@ def run(current_settings: Settings | None = None) -> int:
         config_ready=config_ready,
         instance_id=identity.instance_id,
         app_environment=identity.app_environment,
+        publisher_provider=_publisher_provider,
     )
     # Banner: gercek (auto-assigned olabilir) health portunu yansitabilmek icin
     # health_server start sonrasi yazdirilir.
@@ -236,6 +301,9 @@ def run(current_settings: Settings | None = None) -> int:
             dead_letter_count,
         )
     publisher = ResilientPublisher(broker=broker, outbox=outbox)
+    # Health server'in /health/metrics endpoint'leri publisher uzerinden
+    # outbox + circuit breaker durumunu okuyabilsin diye holder'a yaz
+    publisher_holder["publisher"] = publisher
     retrier = OutboxRetrier(
         outbox,
         publish_fn=publisher.publish_outbox_row,

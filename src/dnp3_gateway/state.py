@@ -22,6 +22,7 @@ import json
 import logging
 import os
 import tempfile
+import time
 from dataclasses import asdict
 from pathlib import Path
 from threading import Lock
@@ -31,9 +32,22 @@ from dnp3_gateway.backend import DeviceConfig, GatewayConfig, SignalConfig
 
 logger = logging.getLogger(__name__)
 
+# Cache disk'te bu kadar saatten daha eski ise stale kabul edilir; load_from_cache
+# yine de yukler ama bunu loglar/snapshot'a yansitir. Backend uzun sure down ise
+# operator backend baglantisini cozmedikce eski cihaz IP'leriyle calismaya
+# devam eder — bu surec uzun olmamali (cihaz IP'leri/sinyal config'i degismis
+# olabilir). 24 saat varsayilan; production'da CONFIG_CACHE_MAX_AGE_HOURS ile
+# override edilebilir.
+DEFAULT_CACHE_MAX_AGE_HOURS = 24
+
 
 class GatewayState:
-    def __init__(self, *, cache_path: str | os.PathLike | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        cache_path: str | os.PathLike | None = None,
+        cache_max_age_hours: float = DEFAULT_CACHE_MAX_AGE_HOURS,
+    ) -> None:
         self._lock = Lock()
         self._devices: list[DeviceConfig] = []
         self._signals: list[SignalConfig] = []
@@ -42,9 +56,25 @@ class GatewayState:
         self._gateway_active: bool = False
         self._gateway_name: str = ""
         self._cache_path: Path | None = Path(cache_path) if cache_path else None
+        self._cache_max_age_sec: float = max(60.0, float(cache_max_age_hours) * 3600.0)
+        # Wall-clock zamanda son basarili config update timestamp'i (cache age
+        # hesabi icin; cache load'da diskten okunur, update()'de simdiki zamanla
+        # gunceller)
+        self._config_loaded_at_unix: float | None = None
+        # Last config refresh attempt error (None ise saglikli). /health
+        # endpoint'i bu degeri okuyup gateway saglik durumunu raporlar.
+        self._last_refresh_error: str | None = None
+        self._last_refresh_ok_unix: float | None = None
+        self._last_refresh_attempt_unix: float | None = None
 
     def update(self, config: GatewayConfig) -> bool:
-        """Yeni config gelince state'i gunceller. Degistiyse True doner."""
+        """Yeni config gelince state'i gunceller. Degistiyse True doner.
+
+        Backend'den ya da disk cache'den config geldiginde cagirilir. Cache
+        timestamp'i da update edilir; "stale config" kontrolu icin /health
+        endpoint'i bunu kullanir.
+        """
+        now_unix = time.time()
         with self._lock:
             changed = config.config_version != self._config_version
             self._devices = list(config.devices)
@@ -56,16 +86,34 @@ class GatewayState:
                 if key not in known:
                     self._last_read_at.pop(key, None)
             self._config_version = config.config_version
+            self._config_loaded_at_unix = now_unix
+            self._last_refresh_ok_unix = now_unix
+            self._last_refresh_attempt_unix = now_unix
+            self._last_refresh_error = None
         # disk yazimi lock disinda — dosya I/O sirasinda okuyucular bloklanmasin
         if changed:
-            self._persist_unsafe(config)
+            self._persist_unsafe(config, loaded_at_unix=now_unix)
         return changed
+
+    def record_refresh_error(self, error: str) -> None:
+        """Config refresh denemesi basarisiz olursa caller cagirir.
+
+        /health endpoint'i bu kaydi okuyup "config_fetch_failed" durumunu
+        gosterir. last_refresh_ok_unix degismez (cache hala valid).
+        """
+        with self._lock:
+            self._last_refresh_error = error[:500]
+            self._last_refresh_attempt_unix = time.time()
 
     def load_from_cache(self) -> bool:
         """Disk'teki son config snapshot'unu okur (varsa). True donerse hazirdir.
 
         Backend baslangicta kapali olsa bile gateway hemen polling'e baslar.
         Snapshot yoksa veya bozuksa sessizce False doner.
+
+        Cache age: snapshot icinde 'cached_at_unix' alani vardir. Eger cache
+        cache_max_age_sec'den eskise yine yuklenir (gateway down kalmasin)
+        ama warning loglanir; /health "stale_config" durumu yansitir.
         """
 
         if self._cache_path is None or not self._cache_path.exists():
@@ -83,23 +131,49 @@ class GatewayState:
         except (OSError, ValueError, TypeError) as exc:
             logger.warning("config_cache_load_failed path=%s error=%s", self._cache_path, exc)
             return False
+
+        cached_at_unix = data.get("cached_at_unix")
+        try:
+            cached_at_unix = float(cached_at_unix) if cached_at_unix is not None else None
+        except (TypeError, ValueError):
+            cached_at_unix = None
+
+        # Yas kontrolu: cache cok eskiyse warning logla
+        age_sec: float | None = None
+        if cached_at_unix:
+            age_sec = max(0.0, time.time() - cached_at_unix)
+            if age_sec > self._cache_max_age_sec:
+                logger.warning(
+                    "config_cache_stale path=%s age_hours=%.1f max_age_hours=%.1f — "
+                    "cihaz IP/port/sinyal listesi guncel olmayabilir; backend baglantisi kontrol edin",
+                    self._cache_path,
+                    age_sec / 3600.0,
+                    self._cache_max_age_sec / 3600.0,
+                )
+
         with self._lock:
             self._devices = devices
             self._signals = signals
             self._gateway_active = bool(data.get("is_active", True))
             self._gateway_name = str(data.get("gateway_name") or "")
             self._config_version = str(data.get("config_version") or "")
+            self._config_loaded_at_unix = cached_at_unix  # cache zamani; refresh sonrasi update
         logger.info(
-            "config_cache_loaded path=%s devices=%d signals=%d version=%s",
+            "config_cache_loaded path=%s devices=%d signals=%d version=%s age_hours=%s",
             self._cache_path,
             len(devices),
             len(signals),
             data.get("config_version"),
+            f"{age_sec / 3600.0:.1f}" if age_sec is not None else "?",
         )
         return True
 
-    def _persist_unsafe(self, config: GatewayConfig) -> None:
-        """Best-effort: yeni config'i disk'e atomik (tmp + rename) yazar."""
+    def _persist_unsafe(self, config: GatewayConfig, *, loaded_at_unix: float | None = None) -> None:
+        """Best-effort: yeni config'i disk'e atomik (tmp + rename) yazar.
+
+        `loaded_at_unix` cache yas hesabi icin kaydedilir; load_from_cache()
+        bunu okur ve threshold'u asarsa stale uyarisi verir.
+        """
 
         if self._cache_path is None:
             return
@@ -112,6 +186,7 @@ class GatewayState:
                 "is_active": config.is_active,
                 "batch_interval_sec": config.batch_interval_sec,
                 "max_devices": config.max_devices,
+                "cached_at_unix": loaded_at_unix or time.time(),
                 "devices": [asdict(d) for d in config.devices],
                 "signals": [asdict(s) for s in config.signals],
             }
@@ -169,14 +244,57 @@ class GatewayState:
                     due.append(device)
             return due
 
+    def config_loaded_at_unix(self) -> float | None:
+        with self._lock:
+            return self._config_loaded_at_unix
+
+    def cache_age_seconds(self) -> float | None:
+        """Mevcut config kac saniye onceki refresh'ten geliyor."""
+        with self._lock:
+            if self._config_loaded_at_unix is None:
+                return None
+            return max(0.0, time.time() - self._config_loaded_at_unix)
+
+    def is_cache_stale(self) -> bool:
+        """Cache cok eski mi (max_age_sec'i asti mi)? /health icin."""
+        age = self.cache_age_seconds()
+        if age is None:
+            return False
+        return age > self._cache_max_age_sec
+
+    def last_refresh_error(self) -> str | None:
+        with self._lock:
+            return self._last_refresh_error
+
+    def last_refresh_ok_unix(self) -> float | None:
+        with self._lock:
+            return self._last_refresh_ok_unix
+
+    def last_refresh_attempt_unix(self) -> float | None:
+        with self._lock:
+            return self._last_refresh_attempt_unix
+
     def snapshot(self) -> dict[str, Any]:
         with self._lock:
+            cache_age: float | None = None
+            if self._config_loaded_at_unix is not None:
+                cache_age = max(0.0, time.time() - self._config_loaded_at_unix)
+            since_last_ok: float | None = None
+            if self._last_refresh_ok_unix is not None:
+                since_last_ok = max(0.0, time.time() - self._last_refresh_ok_unix)
             return {
                 "gateway_name": self._gateway_name,
                 "config_version": self._config_version,
                 "device_count": len(self._devices),
                 "signal_count": len(self._signals),
                 "active": self._gateway_active,
+                "config_cache_age_sec": cache_age,
+                "config_cache_stale": (
+                    cache_age is not None and cache_age > self._cache_max_age_sec
+                ),
+                "config_cache_max_age_sec": self._cache_max_age_sec,
+                "last_refresh_error": self._last_refresh_error,
+                "seconds_since_last_refresh_ok": since_last_ok,
                 "devices": [device.code for device in self._devices],
                 "devices_detail": [
                     {
