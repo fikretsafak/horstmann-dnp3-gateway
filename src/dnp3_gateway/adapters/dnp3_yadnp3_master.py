@@ -374,6 +374,30 @@ class _ManagedMaster:
         except Exception:  # noqa: BLE001
             logger.debug("yadnp3_channel_shutdown_error", exc_info=True)
 
+    def request_integrity_poll(self) -> bool:
+        """Cihaza ANINDA Class 0+1+2+3 integrity poll gonderir.
+
+        Sequenced scan mantigindan farkli olarak `ScanAllObjects` ad-hoc
+        bir read task'i kuyruga ekler ve master link uzerinden gonderir.
+        SOE handler donen frame'leri ayni cache mantigi ile isler;
+        farkli degerler dirty isaretlenir, poller sonraki cycle'da
+        yayinlar.
+
+        Returns: True = task kuyruga alindi, False = link kapali / hata.
+        """
+        try:
+            # ClassField(True, True, True, True) integrity poll demektir.
+            # ScanClasses (alias) yine ayni amac; AddClassScan'lerden
+            # farkli olarak bir kez calisir.
+            self._master.ScanClasses(
+                opendnp3.ClassField(True, True, True, True),
+                opendnp3.TaskConfig.Default(),
+            )
+            return True
+        except Exception:  # noqa: BLE001
+            logger.exception("yadnp3_integrity_poll_request_failed")
+            return False
+
 
 class Yadnp3TelemetryReader(TelemetryReader):
     """yadnp3 (OpenDNP3) tabanli, event-driven, kayipsiz veri okuyucu."""
@@ -590,6 +614,31 @@ class Yadnp3TelemetryReader(TelemetryReader):
                 cleaned += 1
                 logger.info("yadnp3_master_forgotten device=%s reason=removed_from_config", code)
         return cleaned
+
+    def refresh_all_devices(self) -> tuple[int, int]:
+        """Aktif tum cihazlara ANINDA full integrity poll (Class 0+1+2+3).
+
+        Kullanim: SCADA/operator "tum cihazlara sorgu at" tetiklerse, ya da
+        haberlesme bir sure kopuk kalip yeniden gelirse, hat boyunca tum
+        sinyallerin guncel degerini DB'ye yazmak icin manuel tetik.
+
+        Returns: (basarili_count, toplam_master_count). Basarili = task
+        kuyruga alindigi cihazlar; gercek frame yaniti ayri bir asenkron
+        akista cache'e yazilir.
+        """
+        ok = 0
+        with self._lock:
+            total = len(self._masters)
+            for code, mm in list(self._masters.items()):
+                try:
+                    if mm.request_integrity_poll():
+                        ok += 1
+                        logger.info("yadnp3_integrity_poll_requested device=%s", code)
+                    else:
+                        logger.warning("yadnp3_integrity_poll_failed device=%s", code)
+                except Exception:  # noqa: BLE001
+                    logger.exception("yadnp3_integrity_poll_error device=%s", code)
+        return ok, total
 
     def close(self) -> None:
         with self._lock:

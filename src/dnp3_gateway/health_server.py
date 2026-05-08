@@ -140,6 +140,8 @@ def _make_handler(
     metrics: GatewayMetrics,
     actual_port_provider: Any,
     publisher_provider: Any,
+    reader_provider: Any = None,
+    refresh_token: str = "",
 ) -> type[BaseHTTPRequestHandler]:
     """HTTP handler class'ini state'e + metrics'e bagli olarak dinamik ureten helper."""
 
@@ -186,6 +188,56 @@ def _make_handler(
                 return
             self.send_response(404)
             self.end_headers()
+
+        def do_POST(self):  # noqa: N802
+            """POST /refresh-all — tum cihazlara anlik integrity poll.
+
+            Auth: Authorization header'i Bearer + refresh_token (= GATEWAY_TOKEN)
+            ile eslesmeli. Token bos ise sadece localhost'tan gelen istek
+            kabul edilir (multi-instance test ortami icin).
+
+            Backend bu endpoint'i proxy ederek operator'in 'tum sinyalleri
+            yenile' butonunu uygular.
+            """
+            if self.path != "/refresh-all":
+                self.send_response(404)
+                self.end_headers()
+                return
+            # Auth kontrolu
+            auth = self.headers.get("Authorization", "")
+            expected = f"Bearer {refresh_token}" if refresh_token else None
+            if expected is not None:
+                if auth != expected:
+                    self.send_response(401)
+                    self.end_headers()
+                    return
+            else:
+                # Token yoksa sadece local
+                client_ip = (self.client_address[0] or "")
+                if not client_ip.startswith("127.") and client_ip != "::1":
+                    self.send_response(401)
+                    self.end_headers()
+                    return
+            reader = reader_provider() if reader_provider else None
+            if reader is None or not hasattr(reader, "refresh_all_devices"):
+                self._respond_json(
+                    {"ok": False, "detail": "Reader integrity-poll desteklemiyor"},
+                    status_code=503,
+                )
+                return
+            try:
+                ok, total = reader.refresh_all_devices()
+                logger.info(
+                    "manual_refresh_all_requested ok=%d total=%d", ok, total
+                )
+                self._respond_json(
+                    {"ok": True, "requested": ok, "total_devices": total}
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("manual_refresh_all_failed")
+                self._respond_json(
+                    {"ok": False, "detail": str(exc)}, status_code=500
+                )
 
         def _respond_json(self, body: dict[str, Any], *, status_code: int = 200) -> None:
             payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
@@ -313,6 +365,8 @@ def start_health_server(
     app_environment: str,
     metrics: GatewayMetrics | None = None,
     publisher_provider: Any = None,
+    reader_provider: Any = None,
+    refresh_token: str = "",
 ) -> tuple[HTTPServer, GatewayMetrics, int]:
     """Sunucuyu ayaga kaldirir.
 
@@ -344,6 +398,8 @@ def start_health_server(
         metrics=metrics,
         actual_port_provider=_actual_port_provider,
         publisher_provider=publisher_provider,
+        reader_provider=reader_provider,
+        refresh_token=refresh_token,
     )
     server = HTTPServer((host, port), handler_cls)
     actual_port = int(server.server_address[1])

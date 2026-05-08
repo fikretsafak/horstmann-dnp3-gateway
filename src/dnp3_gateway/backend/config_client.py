@@ -90,6 +90,9 @@ class GatewayConfig:
     config_version: str
     devices: list[DeviceConfig] = field(default_factory=list)
     signals: list[SignalConfig] = field(default_factory=list)
+    # Operator "tum cihazlara sorgu at" sayaci. Bir oncekiyle karsilastirilarak
+    # integrity poll tetiklemesi yapilir; kalici state.py icinde tutulur.
+    refresh_nonce: int = 0
 
 
 class GatewayConfigError(RuntimeError):
@@ -326,6 +329,10 @@ def _parse_gateway_config(data: dict[str, Any], *, default_gateway_code: str) ->
         if item.get("key")
     ]
 
+    try:
+        refresh_nonce = int(data.get("refresh_nonce", 0) or 0)
+    except (TypeError, ValueError):
+        refresh_nonce = 0
     return GatewayConfig(
         gateway_code=str(data.get("gateway_code") or default_gateway_code),
         gateway_name=str(data.get("gateway_name") or ""),
@@ -335,4 +342,5 @@ def _parse_gateway_config(data: dict[str, Any], *, default_gateway_code: str) ->
         config_version=str(data.get("config_version") or ""),
         devices=devices,
         signals=signals,
+        refresh_nonce=refresh_nonce,
     )

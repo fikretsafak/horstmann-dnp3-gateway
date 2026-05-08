@@ -279,6 +279,14 @@ def run(current_settings: Settings | None = None) -> int:
     def _publisher_provider() -> Any:
         return publisher_holder["publisher"]
 
+    # reader_provider: /refresh-all endpoint'i icin reader'a erisim.
+    # Reader bir sonraki adimlarda olusturulup state'e baglanacak; aradaki
+    # holder pattern ile injection.
+    reader_holder: dict[str, Any] = {"reader": None}
+
+    def _reader_provider() -> Any:
+        return reader_holder["reader"]
+
     health, metrics, actual_health_port = start_health_server(
         host=cfg.worker_health_host,
         port=cfg.worker_health_port,
@@ -289,6 +297,9 @@ def run(current_settings: Settings | None = None) -> int:
         instance_id=identity.instance_id,
         app_environment=identity.app_environment,
         publisher_provider=_publisher_provider,
+        reader_provider=_reader_provider,
+        # Backend bu endpoint'i Bearer + GATEWAY_TOKEN ile cagirir.
+        refresh_token=identity.token,
     )
     # Banner: gercek (auto-assigned olabilir) health portunu yansitabilmek icin
     # health_server start sonrasi yazdirilir.
@@ -335,6 +346,8 @@ def run(current_settings: Settings | None = None) -> int:
     retrier.start()
 
     reader: TelemetryReader = build_adapter(cfg)
+    # Health server /refresh-all endpoint'i icin injection
+    reader_holder["reader"] = reader
     logger.info("telemetry_adapter=%s", type(reader).__name__)
     if cfg.is_mock_mode:
         logger.warning(
@@ -389,6 +402,18 @@ def run(current_settings: Settings | None = None) -> int:
     try:
         while not stop_event.is_set():
             now_monotonic = time.monotonic()
+            # Operator tetikli "tum cihazlara sorgu at" bayragi varsa
+            # cycle baslamadan once integrity poll iste; cevaplar SOE
+            # callback'i ile cache'e yazilacak ve sonraki cycle'larda
+            # poller normal akista publish edecek.
+            try:
+                if state.take_refresh_request() and hasattr(reader, "refresh_all_devices"):
+                    ok, total = reader.refresh_all_devices()  # type: ignore[attr-defined]
+                    logger.info(
+                        "manual_refresh_all_triggered ok=%d total=%d", ok, total
+                    )
+            except Exception:  # noqa: BLE001
+                logger.exception("manual_refresh_all_dispatch_failed")
             due_count = len(state.due_devices(now_monotonic))
             published = run_poll_cycle(
                 gateway_code=identity.gateway_code,

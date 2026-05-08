@@ -55,6 +55,12 @@ class GatewayState:
         self._config_version: str = ""
         self._gateway_active: bool = False
         self._gateway_name: str = ""
+        # Operator "tum cihazlara sorgu at" sayaci. Backend her tetik
+        # icin 1 artirir. Gateway en son gordugu degeri burada tutar;
+        # update() sirasinda yeni nonce buyukse take_refresh_request()
+        # bayrak doner ve poller integrity poll tetikler.
+        self._refresh_nonce: int = 0
+        self._refresh_pending: bool = False
         self._cache_path: Path | None = Path(cache_path) if cache_path else None
         self._cache_max_age_sec: float = max(60.0, float(cache_max_age_hours) * 3600.0)
         # Wall-clock zamanda son basarili config update timestamp'i (cache age
@@ -90,10 +96,36 @@ class GatewayState:
             self._last_refresh_ok_unix = now_unix
             self._last_refresh_attempt_unix = now_unix
             self._last_refresh_error = None
+            # Refresh nonce karsilastirma: backend artirilmis bir nonce
+            # gonderdiyse "tum cihazlara sorgu at" tetigini isaretle.
+            # Disk cache'den ilk yuklendiginde ayni nonce gelir, gereksiz
+            # tetik olmaz.
+            try:
+                new_nonce = int(getattr(config, "refresh_nonce", 0) or 0)
+            except (TypeError, ValueError):
+                new_nonce = 0
+            if new_nonce > self._refresh_nonce:
+                self._refresh_pending = True
+                self._refresh_nonce = new_nonce
+            elif new_nonce < self._refresh_nonce:
+                # backend reset yapmis olabilir (test) — sessizce takip et
+                self._refresh_nonce = new_nonce
         # disk yazimi lock disinda — dosya I/O sirasinda okuyucular bloklanmasin
         if changed:
             self._persist_unsafe(config, loaded_at_unix=now_unix)
         return changed
+
+    def take_refresh_request(self) -> bool:
+        """Operator tetikli refresh-all bayragini OKUYUP TEMIZLER.
+
+        Poller her cycle basinda cagirir; True donerse reader'in
+        refresh_all_devices() metodunu cagirip integrity poll tetikler.
+        Bayrak tek seferlik tuketilir."""
+        with self._lock:
+            if self._refresh_pending:
+                self._refresh_pending = False
+                return True
+            return False
 
     def record_refresh_error(self, error: str) -> None:
         """Config refresh denemesi basarisiz olursa caller cagirir.
