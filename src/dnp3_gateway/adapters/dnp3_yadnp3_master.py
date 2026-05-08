@@ -49,6 +49,15 @@ _OBJECT_GROUP_ANALOG_INPUT = 30
 _OBJECT_GROUP_ANALOG_OUTPUT = 40
 _OBJECT_GROUP_STRING = 110
 
+# Recovery doğrulama suresi: OnOpen / stale-edge sonrasi cihazdan fresh frame
+# beklemek icin maksimum sure. Bu surede frame gelmezse cihaz tekrar "lost"
+# kabul edilir ve SCADA "comm_lost" gormeye devam eder. 15 sn:
+#   - Class 0+1+2+3 integrity poll cevabi normal kosullarda <2 sn doner.
+#   - 4G/yavas linkler icin ust sinir 5-8 sn.
+#   - 15 sn TCP-up + DNP3-down sahte recovery'yi yakalamak icin yeterince agresif,
+#     ancak gercek yavas linkleri yanlislikla "lost" yapmaktan korur.
+_RECOVERY_GRACE_SEC = 15.0
+
 
 class Yadnp3AdapterError(RuntimeError):
     """yadnp3 adapter'inda olusan hata."""
@@ -83,6 +92,26 @@ class _DeviceCache:
         # Cihaz stale/disconnected oldugunda comm_lost yayinini SADECE bir kez
         # yapmak icin edge-trigger flag'i. read_device set/clear eder.
         self._stale_announced: bool = False
+        # Recovery state machine — uc durum:
+        #   "online"     : cihaz saglikli, frame'ler taze geliyor.
+        #   "lost"       : link kopuk veya stale; SCADA tarafi comm_lost gorur.
+        #   "recovering" : link az once geri geldi (OnOpen) ya da stale'den
+        #                  cikis tetiklendi; cihazdan henuz fresh frame gelmedi.
+        #                  read_device hala comm_lost yayinlar (SCADA'yi
+        #                  yaniltmamak icin), TA Kİ:
+        #                    a) yeni bir frame gelene kadar (recovery confirmed),
+        #                    b) RECOVERY_GRACE_SEC dolana kadar (timeout -> lost).
+        # Bu sayede TCP up + DNP3 dead durumunda sahte "online" yayini olmaz.
+        self._state: str = "lost"
+        # OnOpen / stale-edge anindan itibaren grace period sayaci icin baslangic.
+        self._recovery_started_at: float = 0.0
+        # Recovery'nin "fresh frame geldi" anchor'i: bundan sonra gelen ilk
+        # cache.set() recovery'yi confirm eder. set() icinde tek seferlik
+        # tetiklenir; sonraki set'ler normal davranir.
+        self._recovery_anchor_at: float = 0.0
+        # Recovery confirmed olduktan sonra read_device'in mark_all_dirty +
+        # log atmasi icin tek seferlik bayrak. read_device tuketince temizler.
+        self._pending_recovery_publish: bool = False
 
     def set(self, group: int, index: int, raw: float, value_string: str | None = None) -> None:
         """SOE handler'in cache'e yazma giris noktasi.
@@ -108,9 +137,17 @@ class _DeviceCache:
         with self._lock:
             prev = self._values.get(key)
             self._values[key] = (raw, value_string)
-            self._last_update_at = time.time()
+            now = time.time()
+            self._last_update_at = now
             if prev is None or prev[0] != raw or prev[1] != value_string:
                 self._dirty.add(key)
+            # Recovery confirmation: cihaz "recovering" durumundaysa ve bu
+            # frame OnOpen/stale-edge anchor'indan sonra geldiyse, bu cihazin
+            # gercekten DNP3 cevapladiginin ispatidir → online'a yukselt ve
+            # read_device'a "tum sinyalleri zorla yayinla" sinyali ver.
+            if self._state == "recovering" and now >= self._recovery_anchor_at:
+                self._state = "online"
+                self._pending_recovery_publish = True
 
     def get(self, group: int, index: int) -> tuple[float, str | None] | None:
         with self._lock:
@@ -124,9 +161,32 @@ class _DeviceCache:
         with self._lock:
             self._dirty.discard((group, index))
 
+    def mark_all_dirty(self) -> int:
+        """Cache'deki tum (group, index) ciftlerini dirty isaretler.
+
+        Recovery anlik kullanim: cihaz iletisimi koptuktan sonra geri geldiginde
+        cihazin sinyal degerleri ayni kalmis olabilir; saf event-driven mantikta
+        hicbir sinyal "degisti" olmadigindan publish edilmez ve dis SCADA
+        cihazi hala "comm_lost" gorur. Recovery'de bu method cagrilirsa bir
+        sonraki read_device cycle'inda son bilinen tum degerler `quality=good`
+        ile yayinlanir → tag-engine → outbound (IEC 104, REST, MQTT) → SCADA
+        cihazi tekrar "online" gorur. Donus: dirty isaretlenen kayit sayisi.
+        """
+        with self._lock:
+            count = len(self._values)
+            self._dirty.update(self._values.keys())
+            return count
+
     def set_connected(self, ok: bool) -> None:
         with self._lock:
             self._connected = ok
+            # Link tamamen koptu → state'i lost'a dusur. recovery flag'lerini
+            # temizle ki sonraki OnOpen yeniden recovering tetiklesin.
+            if not ok:
+                self._state = "lost"
+                self._recovery_started_at = 0.0
+                self._recovery_anchor_at = 0.0
+                self._pending_recovery_publish = False
 
     def is_connected(self) -> bool:
         with self._lock:
@@ -139,6 +199,62 @@ class _DeviceCache:
     def last_update_at(self) -> float:
         with self._lock:
             return self._last_update_at
+
+    # ---- Recovery state machine ------------------------------------------------
+    # Cihaz haberlesme durumu icin uc-state model:
+    #   lost       : SCADA "comm_lost" gorur; gercek de oyle.
+    #   recovering : link az once geldi/dirildi ama henuz fresh frame yok;
+    #                SCADA hala "comm_lost" goruyor (sahte online onlemek icin).
+    #   online     : fresh frame geldi, normal yayilim.
+    # Read_device bu state'i okuyup karar verir.
+
+    def begin_recovery(self) -> None:
+        """OnOpen ya da stale-edge sonrasi 'recovering' moduna gec.
+
+        Idempotent: zaten recovering ise grace period sayaci sifirlanmaz
+        (tekrar OnOpen flap'i grace'i ayrica uzatmaz).
+        """
+        now = time.time()
+        with self._lock:
+            if self._state == "recovering":
+                return
+            self._state = "recovering"
+            self._recovery_started_at = now
+            self._recovery_anchor_at = now
+            self._pending_recovery_publish = False
+
+    def state(self) -> str:
+        with self._lock:
+            return self._state
+
+    def recovery_age(self) -> float:
+        """Recovering durumunda gecen sure (saniye). Diger durumlarda 0."""
+        with self._lock:
+            if self._state != "recovering" or self._recovery_started_at == 0.0:
+                return 0.0
+            return time.time() - self._recovery_started_at
+
+    def fail_recovery(self) -> None:
+        """Grace period dolmasina ragmen fresh frame gelmedi: tekrar lost."""
+        with self._lock:
+            if self._state == "recovering":
+                self._state = "lost"
+                self._recovery_started_at = 0.0
+                self._recovery_anchor_at = 0.0
+                self._pending_recovery_publish = False
+
+    def consume_recovery_publish(self) -> bool:
+        """Fresh frame ile recovery confirmed olduysa True doner; tek seferlik.
+
+        read_device bunu cagirip True alirsa mark_all_dirty + log + recovery
+        announcement yapar. Tukettikten sonra flag temizlenir, sonraki cycle'da
+        normal davranis.
+        """
+        with self._lock:
+            if self._pending_recovery_publish:
+                self._pending_recovery_publish = False
+                return True
+            return False
 
 
 def _make_soe_handler(cache: _DeviceCache, device_code: str) -> Any:
@@ -216,8 +332,13 @@ def _make_master_app(cache: _DeviceCache, device_code: str) -> Any:
             pass
 
         def OnOpen(self):  # noqa: N802
+            # Link acildi — connected flag'i set ama henuz "online" sayma.
+            # Cihaz DNP3 frame'i cevapladigi anda set() recovery'yi confirm
+            # edip state'i "online"a yukseltecek. read_device bu arada hala
+            # comm_lost yayinlayarak SCADA'yi yaniltmamaya devam eder.
             cache.set_connected(True)
-            logger.info("yadnp3_master_link_open device=%s", device_code)
+            cache.begin_recovery()
+            logger.info("yadnp3_master_link_open device=%s state=recovering", device_code)
 
         def OnClose(self):  # noqa: N802
             cache.set_connected(False)
@@ -485,25 +606,56 @@ class Yadnp3TelemetryReader(TelemetryReader):
         now = time.time()
         stale = last_update == 0.0 or (now - last_update) > threshold
 
-        # Bagi koptu/kopuk veya veri eski: comm_lost yayini. ANCAK, yayini
-        # SADECE EDGE'de (ilk gecis) yapariz — sonraki cycle'larda no_change
-        # doneriz ki frontend "cihaz kopuyor-iyiyor" flap gormesin ve
-        # RabbitMQ'ya 175 sinyal x N cycle flood olmasin. State, cache'in
-        # _stale_announced flag'inde tutulur.
-        if not connected or stale:
-            if connected and stale:
-                # Tek sefer warning log; flag set olunca surekli logu kestirir.
-                if not getattr(cache, "_stale_announced", False):
-                    logger.warning(
-                        "yadnp3_device_stale device=%s ip=%s last_data_age=%ds threshold=%ds "
-                        "(link kopmadi gozukuyor ama veri eskidi - comm_lost yayinlaniyor)",
-                        device.code,
-                        device.ip_address,
-                        int(now - last_update) if last_update else -1,
-                        threshold,
-                    )
-            # Sadece daha once stale/disconnected bildirimini yapmadiysak
-            # bu cycle'da comm_lost yay; sonrakilerde no_change doneriz.
+        # Recovery state machine ile birlikte cihaz haberlesme durumu su sekilde
+        # belirlenir:
+        #   * connected=False    → state lost; comm_lost yayini (edge'de).
+        #   * connected=True ve stale → link gozukuyor ama frame gelmiyor:
+        #     stale-edge'de begin_recovery (henuz lost'da degilse) → comm_lost
+        #     yayini surdur. Cihaz cevap verince set() recovery'yi onaylar.
+        #   * connected=True ve recovering ve grace asildi → fail_recovery,
+        #     tekrar lost; SCADA hala comm_lost goruyor.
+        #   * connected=True ve recovering ve grace dolmadi → comm_lost yayini.
+        #     SAHTE online onlemek icin SCADA'yi "comm_lost" olarak tutariz.
+        #   * connected=True ve online → normal event-driven yayin.
+
+        cache_state = cache.state()
+
+        # Stale-edge: link OnOpen demis ama frame gelmiyor. State'i recovery'e
+        # cek ki SCADA hala comm_lost gorsun, fresh frame beklensin.
+        if connected and stale and cache_state == "online":
+            cache.begin_recovery()
+            cache_state = "recovering"
+            logger.warning(
+                "yadnp3_device_stale device=%s ip=%s last_data_age=%ds threshold=%ds "
+                "(link acik gozukuyor ama veri eskidi - state=recovering)",
+                device.code,
+                device.ip_address,
+                int(now - last_update) if last_update else -1,
+                threshold,
+            )
+            try:
+                mm.request_integrity_poll()
+            except Exception:  # noqa: BLE001
+                logger.debug("yadnp3_stale_integrity_poll_error", exc_info=True)
+
+        # Recovery grace timeout: link acik ama hala fresh frame gelmedi →
+        # tekrar lost. SCADA "comm_lost" gormeye devam eder; bu zaten dogru.
+        if cache_state == "recovering":
+            if cache.recovery_age() > _RECOVERY_GRACE_SEC:
+                cache.fail_recovery()
+                cache_state = "lost"
+                logger.warning(
+                    "yadnp3_device_recovery_timeout device=%s ip=%s grace_sec=%.0f "
+                    "(fresh frame gelmedi - state=lost)",
+                    device.code,
+                    device.ip_address,
+                    _RECOVERY_GRACE_SEC,
+                )
+
+        # Cihaz "online" degil mi? comm_lost yayini.
+        # Ilk edge'de quality=comm_lost, sonrakilerde no_change (mesaj flood'unu
+        # onlemek icin).
+        if cache_state != "online":
             already_announced = getattr(cache, "_stale_announced", False)
             try:
                 cache._stale_announced = True  # type: ignore[attr-defined]
@@ -523,19 +675,22 @@ class Yadnp3TelemetryReader(TelemetryReader):
                 for s in signals
             ]
 
-        # Cihaz tekrar saglikli — eger daha onceden stale_announced=True
-        # idiyse simdi recovery yayini icin flag'i temizle. Cache'deki
-        # mevcut entry'lerin dirty flag'i zaten Class 0 baseline ile
-        # taze ayarlandi, bu yuzden dogal olarak sinyaller publish edilir.
-        if getattr(cache, "_stale_announced", False):
+        # Buradan sonrasi: state == "online". Cihaz cevapliyor.
+        # Recovery confirmed olduysa (set() flag'i tetiklemis) bir kerelik
+        # mark_all_dirty + log. Boylece SCADA tum sinyalleri quality=good ile
+        # gorur; cihazin son bilinen degerleri yayilanir.
+        if cache.consume_recovery_publish():
             try:
                 cache._stale_announced = False  # type: ignore[attr-defined]
             except Exception:  # noqa: BLE001
                 pass
+            redirty_count = cache.mark_all_dirty()
             logger.info(
-                "yadnp3_device_recovered device=%s ip=%s",
+                "yadnp3_device_recovered device=%s ip=%s redirty=%d "
+                "(fresh frame ile dogrulandi)",
                 device.code,
                 device.ip_address,
+                redirty_count,
             )
 
         readings: list[SignalReading] = []
