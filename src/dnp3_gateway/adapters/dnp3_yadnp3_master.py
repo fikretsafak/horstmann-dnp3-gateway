@@ -144,10 +144,23 @@ class _DeviceCache:
             # Recovery confirmation: cihaz "recovering" durumundaysa ve bu
             # frame OnOpen/stale-edge anchor'indan sonra geldiyse, bu cihazin
             # gercekten DNP3 cevapladiginin ispatidir → online'a yukselt ve
-            # read_device'a "tum sinyalleri zorla yayinla" sinyali ver.
+            # **bu noktada tum bilinen sinyalleri dirty isaretle** ki bir
+            # sonraki read_device cycle'inda (en gec scan_interval_sec sonra)
+            # hepsi quality=good ile yayinlansin. Onceden burada sadece
+            # _pending_recovery_publish=True isaretliyordum ve read_device
+            # mark_all_dirty cagiriyordu; ama integrity poll cevap geldiginde
+            # binlerce sinyal pesi sira cache.set ile yazilir, herbiri sadece
+            # KENDI key'ini dirty yapar. Recovery confirm aninda mark_all_dirty
+            # cagrarak son bilinen TUM degerlerin yayinlanmasini garantiliyoruz
+            # (bazi sinyaller hala eski deger olabilir, integrity poll'un
+            # devami gelene kadar zaman gecmis olabilir).
             if self._state == "recovering" and now >= self._recovery_anchor_at:
                 self._state = "online"
                 self._pending_recovery_publish = True
+                # Tum cache'i dirty isaretle. Boylece bir sonraki cycle'da
+                # (scan_interval_sec sonra) butun sinyaller yayinlanir; read_
+                # device'in mark_all_dirty cagirmasini beklemeye gerek yok.
+                self._dirty.update(self._values.keys())
 
     def get(self, group: int, index: int) -> tuple[float, str | None] | None:
         with self._lock:
