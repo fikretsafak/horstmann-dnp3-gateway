@@ -507,11 +507,14 @@ class _ManagedMaster:
         Returns: True = task kuyruga alindi, False = link kapali / hata.
         """
         try:
-            # ClassField(True, True, True, True) integrity poll demektir.
-            # ScanClasses (alias) yine ayni amac; AddClassScan'lerden
-            # farkli olarak bir kez calisir.
+            # ScanClasses imzasi: (field, soe_handler, config=Default).
+            # SOE handler'i atlamak TypeError verir (bkz. ya nodp3 binding);
+            # bu master'in zaten kendi cache'ini besleyen handler'i (self._soe)
+            # kullanilir, boylece donen frame'ler normal akista cache'e yazilir.
+            # ClassField(True, True, True, True) = Class 0+1+2+3 full integrity.
             self._master.ScanClasses(
                 opendnp3.ClassField(True, True, True, True),
+                self._soe,
                 opendnp3.TaskConfig.Default(),
             )
             return True
