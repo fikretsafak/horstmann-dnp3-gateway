@@ -2,6 +2,23 @@
 
 Semver'a gore tutulur. Format: [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.4.5] - 2026-05-12
+
+### Changed — production validator esnetildi (private network HTTP)
+- **BACKEND_API_URL/NATS_URL production validator'u** artik host bazli karar
+  veriyor: private/loopback ag (RFC1918, 127.x, *.local, *.lan, *.internal,
+  localhost) icin clear-text http://+nats:// kabul; public host icin TLS
+  hala zorunlu. Onceki halde "production" ortaminda her http:// reddedildigi
+  icin internal IP'de calisan saha deploylari APP_ENVIRONMENT=staging'e
+  dusmek zorunda kaliyordu.
+
+### Added — bilincli plaintext opt-out
+- **`GATEWAY_INSECURE_ALLOW_PLAINTEXT`** bayragi (default FALSE). Public
+  host'a clear-text HTTP/nats:// gecici izin verir; boot'ta loud WARN log
+  atilir. Saha senaryosu: backend henuz Caddy/LE ile TLS'lenmeden public
+  IP'de calisirken gateway'i ayaga kaldirmak icin. Plan: TLS kurulunca
+  bayragi kaldir.
+
 ## [0.4.4] - 2026-05-12
 
 ### Fixed — render_compose.py + saha template'leri (cutover follow-up)

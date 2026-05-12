@@ -332,6 +332,16 @@ def run(current_settings: Settings | None = None) -> int:
             "modunu yok sayiyor. .env'den NATS_DUAL_PUBLISH_ENABLED=false yapin "
             "veya satiri silin."
         )
+    # Loud uyari: insecure plaintext opt-out — operator clear-text http://public
+    # ya da nats://public icin bilincli izin vermis. Boot'ta yuksek sesle log
+    # atalim ki gozden kacmasin; uretim icin gecici (TLS kurulana kadar).
+    if cfg.gateway_insecure_allow_plaintext:
+        logger.warning(
+            "GATEWAY_INSECURE_ALLOW_PLAINTEXT=true — production validator "
+            "public host'a clear-text HTTP/nats:// izin veriyor. Token ve "
+            "telemetri MITM riski altinda. Mumkun olan en kisa zamanda TLS "
+            "kurun (backend Caddy/Let's Encrypt, NATS tls:// listener)."
+        )
 
     # Disk cache: backend kapali iken / container restart'ta gateway en son
     # gordugu config ile (cihaz IP'leri, sinyal listesi, master_address)

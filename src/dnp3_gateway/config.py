@@ -2,10 +2,44 @@
 
 from __future__ import annotations
 
+import ipaddress
 from urllib.parse import urlparse
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _host_is_private(host: str | None) -> bool:
+    """Host private/loopback ag uzerinde mi? (RFC1918, link-local, loopback, ULA).
+
+    True donerse clear-text HTTP/nats:// MITM riski "kontrollu ag" altinda
+    kalir — production validator'da bu host'lara izin verilebilir. Public
+    hostname (DNS adi, hicbir IP'ye cevrilemez) veya routable IP icin
+    False doneriz; o durumda HTTPS/TLS zorunlu olur.
+
+    Iceriye `localhost` ve `*.local` (mDNS) da private kabul edilir.
+    Hostname icin DNS lookup yapmiyoruz — sahada lookup yan etkili olabilir
+    (timeout, MITM); operator'in IP veya isim tercihi yeterli sinyal.
+    """
+    if not host:
+        return False
+    h = host.strip().lower()
+    if not h:
+        return False
+    if h in ("localhost", "localhost.localdomain"):
+        return True
+    if h.endswith(".local") or h.endswith(".lan") or h.endswith(".internal"):
+        return True
+    # IPv6 brackets ([::1]) ayikla
+    if h.startswith("[") and h.endswith("]"):
+        h = h[1:-1]
+    try:
+        addr = ipaddress.ip_address(h)
+    except ValueError:
+        # DNS adi — private suffix kontrolu yukarida; geri kalan public
+        # kabul.
+        return False
+    return addr.is_private or addr.is_loopback or addr.is_link_local
 
 
 class Settings(BaseSettings):
@@ -52,6 +86,23 @@ class Settings(BaseSettings):
     )
     gateway_token_min_length_staging: int = Field(default=16, ge=8, le=256)
     gateway_token_min_length_production: int = Field(default=32, ge=16, le=256)
+
+    # ----- Insecure plaintext opt-out (geçici, bilincli) -----------------------
+    # Saha senaryosu: backend henuz TLS sertifikasi olmayan public IP'de
+    # (orn. http://77.83.37.44:8000/...) ve gateway prod ortaminda calisiyor.
+    # Default validator clear-text HTTP'yi public host'a yasakliyor — dogru
+    # karar. Operator gectigine ZORUNDA kalirsa bu bayragi `true` set edip
+    # opt-out edebilir. Boot'ta loud WARN log atilir; saklamak/maskelemek YOK.
+    # Uretim defacto kullanim: gecici, plan = Caddy/Let's Encrypt ile TLS ekle.
+    gateway_insecure_allow_plaintext: bool = Field(
+        default=False,
+        description=(
+            "DEFAULT FALSE. True yapilirsa production ortaminda public host'a "
+            "clear-text http:// + nats:// (TLS-siz) izin verilir. Gateway "
+            "token + tum telemetri MITM riski altinda olur. Sadece TLS "
+            "kurulana kadar gecici saha calistirma icin."
+        ),
+    )
 
     # ----- Calisma modu --------------------------------------------------------
     gateway_mode: str = Field(default="mock", description="mock | dnp3")
@@ -485,12 +536,12 @@ class Settings(BaseSettings):
         """Production / staging ortaminda guvenlik kontrolleri.
 
         * TLS verify ZORUNLU — kapatilirsa SystemExit (MITM koruma).
-        * BACKEND_API_URL https:// olmali (production/staging) — clear-text
-          gateway token MITM koruma.
-        * NATS_URL bos olamaz (production); tls:// onerilir, nats://
-          (clear-text) kabul ama uyari log atilir. Gateway 0.4.x'te NATS
-          telemetri akisinin tek yoludur, eksikse cihaz verisi cati'ya
-          ulasmaz.
+        * BACKEND_API_URL: public hostname/IP icin https:// zorunlu; private
+          ag (RFC1918, loopback, link-local, *.local/.lan/.internal,
+          localhost) icin http:// kabul. Public clear-text HTTP -> token
+          MITM riski.
+        * NATS_URL: ayni mantik — public host'a nats:// (clear-text) yasak,
+          tls:// zorunlu; private host'ta nats:// kabul. Boş olamaz (prod).
         * Token MIN length staging=16, production=32.
         * SHOW_GATEWAY_TOKEN_ON_START production'da kapali olmali — leak riski.
         * GATEWAY_REFRESH_TOKEN, GATEWAY_TOKEN'dan FARKLI olmali — ayni ise
@@ -510,27 +561,51 @@ class Settings(BaseSettings):
                     "BACKEND_API_VERIFY_SSL=False olamaz (MITM riski). "
                     "Sertifika sorunu varsa BACKEND_API_CA_PATH ile kendi CA bundle'inizi verin."
                 )
-            if not self.backend_api_url.lower().startswith("https://"):
+            backend_parsed = urlparse(self.backend_api_url)
+            backend_is_https = backend_parsed.scheme.lower() == "https"
+            backend_host_private = _host_is_private(backend_parsed.hostname)
+            if (
+                not backend_is_https
+                and not backend_host_private
+                and not self.gateway_insecure_allow_plaintext
+            ):
                 raise ValueError(
-                    f"GUVENLIK: APP_ENVIRONMENT={env} ortaminda "
-                    f"BACKEND_API_URL https:// olmali (gelen: {self.backend_api_url!r}). "
-                    "Clear-text HTTP uzerinden gateway token MITM ile calinabilir."
+                    f"GUVENLIK: APP_ENVIRONMENT={env} ortaminda BACKEND_API_URL "
+                    f"public host icin https:// olmali (gelen: {self.backend_api_url!r}). "
+                    "Clear-text HTTP yalnizca private/loopback ag icin (RFC1918, "
+                    "127.x, *.local, localhost, *.internal) izinlidir. "
+                    "TLS henuz kurulamiyorsa GATEWAY_INSECURE_ALLOW_PLAINTEXT=true "
+                    "ile bilincli opt-out yapabilirsiniz (boot'ta WARN log atilir)."
                 )
             if is_prod:
-                # NATS scheme kontrolu: production'da boş olamaz; tls://
-                # onerilir, nats:// (clear-text) kabul ama riskli. 0.4.x'te
-                # NATS telemetri akisinin TEK yolu.
-                nats_url_lower = (self.nats_url or "").strip().lower()
-                if not nats_url_lower:
+                # NATS: prod'da bos olamaz. Public host'a TLS zorunlu, private
+                # host'a nats:// kabul. 0.4.x'te telemetri akisinin TEK yolu.
+                nats_url_raw = (self.nats_url or "").strip()
+                if not nats_url_raw:
                     raise ValueError(
                         "GUVENLIK: APP_ENVIRONMENT=production'da NATS_URL "
                         "bos olamaz. Gateway telemetriyi JetStream'e basar; "
                         "URL set edilmezse hicbir telemetri cati'ya iletilmez."
                     )
-                if not nats_url_lower.startswith(("tls://", "nats://")):
+                nats_parsed = urlparse(nats_url_raw)
+                nats_scheme = nats_parsed.scheme.lower()
+                if nats_scheme not in ("tls", "nats"):
                     raise ValueError(
                         f"GUVENLIK: APP_ENVIRONMENT=production'da NATS_URL "
                         f"tls:// veya nats:// scheme olmali (gelen: {self.nats_url!r})."
+                    )
+                nats_host_private = _host_is_private(nats_parsed.hostname)
+                if (
+                    nats_scheme == "nats"
+                    and not nats_host_private
+                    and not self.gateway_insecure_allow_plaintext
+                ):
+                    raise ValueError(
+                        f"GUVENLIK: APP_ENVIRONMENT=production'da public NATS host "
+                        f"icin tls:// olmali (gelen: {self.nats_url!r}). Clear-text "
+                        "nats:// yalnizca private/loopback ag icin izinlidir. "
+                        "TLS henuz kurulamiyorsa GATEWAY_INSECURE_ALLOW_PLAINTEXT=true "
+                        "ile bilincli opt-out yapabilirsiniz."
                     )
                 if self.show_gateway_token_on_start:
                     raise ValueError(

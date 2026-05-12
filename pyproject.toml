@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "enerjione-dnp3-gateway"
-version = "0.4.4"
+version = "0.4.5"
 description = "EnerjiOne Grid Dashboard platformu icin standalone DNP3 gateway servisi (Horstmann SN2 cihazlari ile konusur)"
 readme = "README.md"
 requires-python = ">=3.10"
