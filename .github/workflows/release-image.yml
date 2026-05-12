@@ -6,9 +6,9 @@
 #
 # Image visibility:
 #   The repo is private but the published package can be made PUBLIC from
-#   GitHub UI (Profile -> Packages -> horstmann-dnp3-gateway -> Settings ->
+#   GitHub UI (Profile -> Packages -> enerjionegrid-dnp3-gateway -> Settings ->
 #   Change visibility -> Public). After that step, end users can run
-#   `docker pull ghcr.io/fikretsafak/horstmann-dnp3-gateway:latest` without
+#   `docker pull ghcr.io/fikretsafak/enerjionegrid-dnp3-gateway:latest` without
 #   `docker login`. Source code stays private.
 #
 # Why GHCR (not Docker Hub):

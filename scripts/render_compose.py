@@ -13,7 +13,7 @@ CLI:
         --backend-url https://hsl.formelektrik.com/api/v1 \
         --nats-url nats://hsl-nats:4222 \
         --host-port 8020 \
-        --image ghcr.io/fikretsafak/horstmann-dnp3-gateway:0.4.3 \
+        --image ghcr.io/fikretsafak/enerjionegrid-dnp3-gateway:0.4.3 \
         --output ./gw-001.yml
 
 Library:
@@ -75,7 +75,7 @@ def render_compose(
     backend_url: str,
     nats_url: str,
     host_port: int,
-    image: str = "ghcr.io/fikretsafak/horstmann-dnp3-gateway:latest",
+    image: str = "ghcr.io/fikretsafak/enerjionegrid-dnp3-gateway:latest",
     app_environment: str = "production",
     template_path: Path = DEFAULT_TEMPLATE_PATH,
 ) -> str:
@@ -158,8 +158,8 @@ def _build_arg_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--image",
-        default="ghcr.io/fikretsafak/horstmann-dnp3-gateway:latest",
-        help="Docker image tag (default: ghcr.io/fikretsafak/horstmann-dnp3-gateway:latest)",
+        default="ghcr.io/fikretsafak/enerjionegrid-dnp3-gateway:latest",
+        help="Docker image tag (default: ghcr.io/fikretsafak/enerjionegrid-dnp3-gateway:latest)",
     )
     p.add_argument(
         "--app-environment",

@@ -93,7 +93,7 @@ bakin.
 py -3.10 -m dnp3_gateway
 
 # veya setuptools ile kurulduysa
-horstmann-dnp3-gateway
+enerjione-dnp3-gateway
 ```
 
 Birden fazla gateway ayni makinede calistirilacaksa `scripts/run_gateway.ps1`

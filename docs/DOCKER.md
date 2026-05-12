@@ -46,8 +46,8 @@ ayrica build veya `docker login` GEREKMEZ. `docker compose up -d` cagrisi ilk ac
 image'i otomatik pull eder.
 
 ```
-ghcr.io/fikretsafak/horstmann-dnp3-gateway:latest    # her main push'unda taze
-ghcr.io/fikretsafak/horstmann-dnp3-gateway:0.4.3     # surume kilitli
+ghcr.io/fikretsafak/enerjionegrid-dnp3-gateway:latest    # her main push'unda taze
+ghcr.io/fikretsafak/enerjionegrid-dnp3-gateway:0.4.3     # surume kilitli
 ```
 
 Image otomatik olarak `.github/workflows/release-image.yml` workflow'u tarafindan
@@ -66,12 +66,12 @@ Horstmann SN2 string sinyalleri tam desteklenir.
 Repo'ya commit yetkisi olan gelistiriciler local image build edebilir:
 
 ```bash
-git clone https://github.com/fikretsafak/horstmann-dnp3-gateway.git
-cd horstmann-dnp3-gateway
+git clone https://github.com/fikretsafak/EnerjiOneGrid-DNP3-Gateway.git
+cd EnerjiOneGrid-DNP3-Gateway
 
 docker build \
     --build-arg DNP3_LIBRARY=yadnp3 \
-    -t ghcr.io/fikretsafak/horstmann-dnp3-gateway:dev .
+    -t ghcr.io/fikretsafak/enerjionegrid-dnp3-gateway:dev .
 ```
 
 ## 2. Yeni gateway ekle (frontend akisi)
@@ -86,7 +86,7 @@ Operator/installer arayuzde "Yeni Gateway Ekle" butonuna basar:
      `https://hsl.formelektrik.com/api/v1`).
    - `rabbitmq_url` (zorunlu) : AMQP broker URL.
    - `host_port` (varsayilan 8020): Bu instance icin host portu.
-   - `image` (varsayilan `ghcr.io/fikretsafak/horstmann-dnp3-gateway:latest`).
+   - `image` (varsayilan `ghcr.io/fikretsafak/enerjionegrid-dnp3-gateway:latest`).
    - `app_environment` (varsayilan `production`).
    - `fmt` (varsayilan `compose`): `compose` veya `env`.
 3. Inen dosya `hsl-gw-<code>.yml` (compose) veya `hsl-gw-<code>.env` (raw env).
@@ -132,7 +132,7 @@ done
 Liste:
 
 ```bash
-docker ps --filter "label=org.opencontainers.image.title=horstmann-dnp3-gateway"
+docker ps --filter "label=org.opencontainers.image.title=enerjione-dnp3-gateway"
 ```
 
 Tek bir gateway'i durdur / yeniden baslat:
