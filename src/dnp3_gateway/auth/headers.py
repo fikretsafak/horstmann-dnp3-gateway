@@ -22,7 +22,7 @@ def build_config_request_headers(identity: GatewayIdentity) -> dict[str, str]:
         "X-Gateway-Code": identity.gateway_code,
         "X-Gateway-Instance-Id": identity.instance_id,
         "X-Request-Id": correlation,
-        "User-Agent": f"Horstmann-Dnp3Gateway/{identity.app_version} (env={identity.app_environment})",
+        "User-Agent": f"EnerjiOne-Dnp3Gateway/{identity.app_version} (env={identity.app_environment})",
     }
     h["X-Gateway-Client"] = f"dnp3-gateway/{identity.app_version}"
     return h

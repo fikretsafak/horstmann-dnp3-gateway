@@ -1,13 +1,13 @@
-# Horstmann Smart Logger DNP3 Gateway
+# EnerjiOne DNP3 Gateway
 
 **Version:** 0.2.2
 **Hedef platform:** Windows Server / Windows 10+ (Linux systemd de calisabilir)
 **Python:** 3.10 - 3.12
 
-Bu proje [Horstman Smart Logger](../Horstman%20Smart%20Logger) catisinin saha
+Bu proje [EnerjiOne Grid Dashboard](../Horstman%20Smart%20Logger) catisinin saha
 katmanidir. Her gateway instance'i **1 gateway kaydinda tanimli 100'e kadar
 Horstmann SN 2.0 cihazi** ile DNP3 uzerinden haberlesir; okudugu sinyalleri
-normalize ederek RabbitMQ uzerinden cati yazilima iletir. Sistem mimarisinde
+normalize ederek NATS JetStream uzerinden cati yazilima iletir. Sistem mimarisinde
 toplam 6 gateway paralel calisir (6 x 100 = 600 cihaz).
 
 ```

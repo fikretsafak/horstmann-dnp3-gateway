@@ -20,16 +20,49 @@ def _dev_identity(*, code: str = "GW-001", token: str = "tok") -> GatewayIdentit
     )
 
 
+class _DummyRaw:
+    """response.raw mock — config_client `stream=True + raw.read(...)` cagiriyor."""
+
+    def __init__(self, body_bytes: bytes) -> None:
+        self._body = body_bytes
+        self._offset = 0
+
+    def read(self, n: int = -1, decode_content: bool = False) -> bytes:
+        _ = decode_content
+        if n < 0:
+            chunk = self._body[self._offset:]
+            self._offset = len(self._body)
+            return chunk
+        chunk = self._body[self._offset : self._offset + n]
+        self._offset += len(chunk)
+        return chunk
+
+
 class _DummyResponse:
     def __init__(self, status_code: int, payload: Any) -> None:
         self.status_code = status_code
         self._payload = payload
-        self.text = json.dumps(payload) if isinstance(payload, (dict, list)) else str(payload)
+        body = json.dumps(payload) if isinstance(payload, (dict, list)) else str(payload)
+        self.text = body
+        self.content = body.encode("utf-8")
+        self.headers: dict[str, str] = {
+            "Content-Type": "application/json",
+            "Content-Length": str(len(self.content)),
+        }
+        self.raw = _DummyRaw(self.content)
 
     def json(self) -> Any:
         if isinstance(self._payload, Exception):
             raise self._payload
         return self._payload
+
+    def iter_content(self, chunk_size: int = 65536, decode_unicode: bool = False):  # noqa: ARG002
+        # Tek chunk halinde dondur — testler icin yeterli.
+        if self.content:
+            yield self.content
+
+    def close(self) -> None:
+        return None
 
 
 class _DummySession:
@@ -38,8 +71,16 @@ class _DummySession:
         self.last_url: str | None = None
         self.last_headers: dict[str, str] | None = None
 
-    def get(self, url: str, headers: dict[str, str] | None = None, timeout: int = 5):
-        _ = timeout
+    def get(
+        self,
+        url: str,
+        headers: dict[str, str] | None = None,
+        timeout: int = 5,
+        stream: bool = False,  # config_client `stream=True` cagiriyor
+        verify: bool | str = True,  # response_max_bytes streaming icin
+        **_kwargs: Any,
+    ):
+        _ = timeout, stream, verify
         self.last_url = url
         self.last_headers = headers
         if isinstance(self._response, Exception):

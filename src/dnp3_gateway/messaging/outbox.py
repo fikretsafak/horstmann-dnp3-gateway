@@ -1,12 +1,15 @@
-"""SQLite tabanli persistent outbox: RabbitMQ'ya gonderilemeyen mesajlari kaybetmez.
+r"""SQLite tabanli persistent outbox: broker'a gonderilemeyen mesajlari kaybetmez.
 
-Mimari:
-  poller -> publish() try -> RabbitMQ
+Mimari (broker = NATS JetStream 0.4.x'te):
+  poller -> publish() try -> broker
                           \-> fail/exception -> outbox.enqueue(mesaj) -> SQLite
   background OutboxRetrier thread -> outbox.dequeue_batch()
                                   -> publisher.publish()
                                   -> basarili: outbox.delete(id), basarisiz: retry_count++
                                   -> retry_count > MAX -> dead-letter tablosuna tasi
+                                  -> JetStreamNotReadyError -> retry_count ARTMAZ
+                                     (transient; broker yokken sessiz dead-letter
+                                     migrasyonu engellenmis)
 
 Garantiler:
   - Process restart'a dayanikli: SQLite diskte; baslangicta queue okunur.
@@ -40,8 +43,8 @@ logger = logging.getLogger(__name__)
 DEFAULT_MAX_RETRIES = 100
 
 # Outbox doldugu zaman enqueue() OutboxFullError raise eder. Tipik production
-# 100 cihaz × saniyede ~50 mesaj. RabbitMQ down 1 saat boyunca = 180,000 mesaj
-# birikebilir; bu sinir asilirsa publisher disk-full davranisina gecer.
+# 100 cihaz × saniyede ~50 mesaj. Broker (NATS) down 1 saat boyunca = 180,000
+# mesaj birikebilir; bu sinir asilirsa publisher disk-full davranisina gecer.
 DEFAULT_MAX_PENDING = 500_000
 
 # Exponential backoff parametreleri (OutboxRetrier).
@@ -100,9 +103,36 @@ class Outbox:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._max_pending = max(1000, int(max_pending))
+        # Persistent connection: her enqueue/fetch/delete cagrisinda yeni
+        # sqlite3.connect() acmak yerine bir kez acip PRAGMA'lari uyguluyoruz.
+        # check_same_thread=False + dis lock thread-safe. WAL otomatik
+        # checkpoint dosyayi temizler. Kazanc: ~3000 mesaj/sn yukunde her
+        # mesajda 1-3ms baglanti acma overhead'i kalkar.
+        self._conn: sqlite3.Connection | None = None
+        # Estimate counter: enqueue'da SELECT COUNT(*) yapmak yerine in-memory
+        # sayac tutariz. Init'te bir kez tam COUNT, sonra +/- delta.
+        # `move_to_dead_letter` ve `delete` -1; `enqueue` +1.
+        # Yaklasik degerdir ama ust sinire kadar yanlislik kabul edilebilir
+        # (worst case birkac mesaj fazla kabul edilebilir; broker recovery'de
+        # zaten retrier hizla bosaltir).
+        self._pending_estimate: int = 0
         self._init_db()
+        # Init sonrasi gerçek count'u oku — restart'ta outbox'ta birikmis
+        # mesajlar varsa estimate dogru baslar.
+        try:
+            with self._lock, self._cached_connection() as c:
+                (n,) = c.execute("SELECT COUNT(*) FROM outbox").fetchone()
+                self._pending_estimate = int(n)
+        except sqlite3.Error:
+            self._pending_estimate = 0
 
-    def _connect(self) -> sqlite3.Connection:
+    def _cached_connection(self) -> sqlite3.Connection:
+        """Persistent connection — caller'in self._lock altinda olmasi gerekir."""
+        if self._conn is None:
+            self._conn = self._open_connection()
+        return self._conn
+
+    def _open_connection(self) -> sqlite3.Connection:
         # check_same_thread=False: thread-safe lock disaridan saglaniyor.
         # WAL: yazma+okuma birlikte olabilsin (retrier vs enqueue).
         # synchronous=NORMAL: WAL ile kombine production'da OK; FULL ihtiyaci
@@ -111,15 +141,26 @@ class Outbox:
         conn = sqlite3.connect(str(self.db_path), check_same_thread=False, timeout=5.0)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
-        # WAL dosyasi zamanla bytes-MB'lara cikar; her 100 sayfada checkpoint.
-        # Boylece WAL boyutu ortalama <1MB kalir, restart hizli olur.
-        conn.execute("PRAGMA wal_autocheckpoint=100")
+        # WAL dosyasi zamanla bytes-MB'lara cikar; her 1000 sayfada checkpoint.
+        # 100 cok agresifti (fsync firtinasi); 1000 ile WAL <8MB kalir,
+        # restart hizli.
+        conn.execute("PRAGMA wal_autocheckpoint=1000")
         return conn
 
+    # Geriye uyumluluk: eski testler veya kullanim _connect()'i context
+    # manager olarak cagiriyor olabilir.
+    def _connect(self) -> sqlite3.Connection:
+        return self._open_connection()
+
     def _init_db(self) -> None:
-        with self._lock, self._connect() as c:
-            c.executescript(_DDL)
-            c.commit()
+        # Init'te ayri bir connection olusturup hemen kapatiyoruz — DDL'i
+        # autocommit moda zorlamak icin.
+        conn = self._open_connection()
+        try:
+            conn.executescript(_DDL)
+            conn.commit()
+        finally:
+            conn.close()
 
     @property
     def max_pending(self) -> int:
@@ -136,16 +177,21 @@ class Outbox:
     ) -> int:
         """Outbox'a mesaj ekler. Outbox dolu ise OutboxFullError raise eder.
 
+        Performans: pending limit kontrolu in-memory `_pending_estimate` ile
+        yapilir; her enqueue'da SELECT COUNT(*) tarama YOK. 500K satirlik
+        outbox'ta bile O(1).
+
         Disk dolma korumasi: max_pending'i asarsa publisher caller'i disk-full
         circuit breaker'i tetikler (poll cycle'i durdurur, /health UNHEALTHY).
         """
-        with self._lock, self._connect() as c:
-            (current,) = c.execute("SELECT COUNT(*) FROM outbox").fetchone()
-            if int(current) >= self._max_pending:
+        with self._lock:
+            if self._pending_estimate >= self._max_pending:
                 raise OutboxFullError(
-                    f"outbox dolu (pending={current}, limit={self._max_pending}); "
-                    "RabbitMQ broker'a uzun suredir baglanilamiyor olabilir"
+                    f"outbox dolu (pending~={self._pending_estimate}, "
+                    f"limit={self._max_pending}); broker (NATS JetStream) uzun "
+                    "suredir erisilemiyor olabilir"
                 )
+            c = self._cached_connection()
             cur = c.execute(
                 "INSERT INTO outbox (message_id, correlation_id, headers, payload, enqueued_at, last_error) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
@@ -159,11 +205,13 @@ class Outbox:
                 ),
             )
             c.commit()
+            self._pending_estimate += 1
             return int(cur.lastrowid or 0)
 
     def fetch_batch(self, limit: int = 200) -> list[dict[str, Any]]:
         """En eski mesajlardan limit kadarini doner."""
-        with self._lock, self._connect() as c:
+        with self._lock:
+            c = self._cached_connection()
             rows = c.execute(
                 "SELECT id, message_id, correlation_id, headers, payload, retry_count, enqueued_at, last_error "
                 "FROM outbox ORDER BY id ASC LIMIT ?",
@@ -184,13 +232,17 @@ class Outbox:
         ]
 
     def delete(self, row_id: int) -> None:
-        with self._lock, self._connect() as c:
-            c.execute("DELETE FROM outbox WHERE id = ?", (row_id,))
+        with self._lock:
+            c = self._cached_connection()
+            cur = c.execute("DELETE FROM outbox WHERE id = ?", (row_id,))
             c.commit()
+            if cur.rowcount > 0:
+                self._pending_estimate = max(0, self._pending_estimate - cur.rowcount)
 
     def mark_retry(self, row_id: int, error: str) -> None:
         # Hata mesaji 2KB'a kadar saklanir — full traceback genelde yeterli.
-        with self._lock, self._connect() as c:
+        with self._lock:
+            c = self._cached_connection()
             c.execute(
                 "UPDATE outbox SET retry_count = retry_count + 1, last_error = ? WHERE id = ?",
                 (error[:2000], row_id),
@@ -202,7 +254,8 @@ class Outbox:
         tablosuna tasir. Ana kuyruktan silinir, alt-kuyrukta forensic icin
         saklanir. Returns True if moved.
         """
-        with self._lock, self._connect() as c:
+        with self._lock:
+            c = self._cached_connection()
             row = c.execute(
                 "SELECT message_id, correlation_id, headers, payload, enqueued_at, retry_count "
                 "FROM outbox WHERE id = ?",
@@ -225,19 +278,43 @@ class Outbox:
                     error[:2000],
                 ),
             )
-            c.execute("DELETE FROM outbox WHERE id = ?", (row_id,))
+            cur = c.execute("DELETE FROM outbox WHERE id = ?", (row_id,))
             c.commit()
+            if cur.rowcount > 0:
+                self._pending_estimate = max(0, self._pending_estimate - cur.rowcount)
             return True
 
     def pending_count(self) -> int:
-        with self._lock, self._connect() as c:
+        """Yaklasik pending mesaj sayisi. Estimate counter ile O(1).
+
+        Tam tarama icin `pending_count_exact()` kullan; ama bu hot-path'te
+        500K satirda yavas (~100ms+)."""
+        with self._lock:
+            return self._pending_estimate
+
+    def pending_count_exact(self) -> int:
+        """Gercek COUNT(*) — debug/observability icin. Production hot-path'te
+        kullanma; `pending_count()`'in O(1) estimate'i yeterli."""
+        with self._lock:
+            c = self._cached_connection()
             (n,) = c.execute("SELECT COUNT(*) FROM outbox").fetchone()
             return int(n)
 
     def dead_letter_count(self) -> int:
-        with self._lock, self._connect() as c:
+        with self._lock:
+            c = self._cached_connection()
             (n,) = c.execute("SELECT COUNT(*) FROM outbox_dead_letter").fetchone()
             return int(n)
+
+    def close(self) -> None:
+        """Persistent connection'i temizle. Test/teardown icin."""
+        with self._lock:
+            if self._conn is not None:
+                try:
+                    self._conn.close()
+                except sqlite3.Error:
+                    pass
+                self._conn = None
 
 
 class OutboxRetrier:
@@ -328,14 +405,29 @@ class OutboxRetrier:
                 continue
             sent = 0
             failed_in_batch = False
+            broker_not_ready = False
             for row in rows:
                 if self._stop.is_set():
                     break
                 try:
                     self._publish_fn(row)
                 except Exception as exc:  # noqa: BLE001
-                    next_retry = row["retry_count"] + 1
                     err_str = str(exc)
+                    # "Not ready" TRANSIENT hata: broker baglantisi yok demek;
+                    # bu mesajin icerigiyle ilgili degil. retry_count artirma
+                    # (aksi takdirde 100dk outage'da 500K mesaj sessizce
+                    # dead-letter'a dusurulebilir). Sadece batch'i kir,
+                    # backoff'a gec — baglanti gelince bir sonraki cycle'da
+                    # ayni mesaj yeniden denenecek.
+                    is_not_ready = (
+                        type(exc).__name__ == "JetStreamNotReadyError"
+                        or "not ready" in err_str.lower()
+                    )
+                    if is_not_ready:
+                        broker_not_ready = True
+                        failed_in_batch = True
+                        break
+                    next_retry = row["retry_count"] + 1
                     if next_retry >= self._max_retries:
                         # Poison message — dead-letter tablosuna tasi, ana
                         # kuyrugu bloke etmesin
@@ -367,6 +459,14 @@ class OutboxRetrier:
                     break
                 self._outbox.delete(row["id"])
                 sent += 1
+            if broker_not_ready:
+                # Sadece "outage" durumunu seyrek logla — log spam'i onle
+                if self._current_backoff <= self._min_backoff * 1.5:
+                    logger.warning(
+                        "outbox_retrier_broker_not_ready pending=%d — "
+                        "baglanti bekleniyor, retry_count artirilmiyor",
+                        len(rows),
+                    )
             if sent:
                 logger.info("outbox_drained sent=%s remaining_in_batch=%s", sent, len(rows) - sent)
             if failed_in_batch:

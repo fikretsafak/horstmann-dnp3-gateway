@@ -44,16 +44,19 @@ class _StubReader(TelemetryReader):
         return list(self._readings)
 
 
-def test_filter_readable_signals_drops_commands_and_strings() -> None:
+def test_filter_readable_signals_drops_commands_only() -> None:
+    """Gateway 0.4.x: string sinyal (Group 110) artik yayinlanir; sadece
+    binary_output (master->outstation komut kanali) yayindan haric tutulur."""
     signals = [
         make_signal("a", data_type="analog"),
         make_signal("b", data_type="binary"),
         make_signal("c", data_type="counter"),
-        make_signal("d", data_type="binary_output"),
-        make_signal("e", data_type="string"),
+        make_signal("d", data_type="binary_output"),  # KOMUT — dahil edilmez
+        make_signal("e", data_type="string"),         # Group 110 — dahil edilir
+        make_signal("f", data_type="analog_output"),  # analog setpoint okuma — dahil
     ]
     keys = [s.key for s in filter_readable_signals(signals)]
-    assert keys == ["a", "b", "c"]
+    assert keys == ["a", "b", "c", "e", "f"]
 
 
 def test_build_telemetry_payload_shape() -> None:

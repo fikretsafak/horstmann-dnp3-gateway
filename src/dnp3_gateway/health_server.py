@@ -19,6 +19,7 @@ rastgele bos port atar (frontend / supervisor portu instance_id ile keseyilir).
 
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import time
@@ -90,7 +91,7 @@ class GatewayMetrics:
 
 
 def _outbox_snapshot(publisher: Any) -> dict[str, Any]:
-    """ResilientPublisher'dan outbox + circuit breaker durumunu cikarir."""
+    """ResilientPublisher'dan outbox + circuit breaker + broker durumunu cikarir."""
     snap: dict[str, Any] = {
         "outbox_full": False,
         "outbox_full_since_epoch": None,
@@ -98,6 +99,10 @@ def _outbox_snapshot(publisher: Any) -> dict[str, Any]:
         "outbox_dead_letter": None,
         "outbox_max_pending": None,
         "last_outbox_error": None,
+        # Broker (NATS JetStream) telemetrisi
+        "broker_ready": None,
+        "broker_publish_failures": None,
+        "broker_publish_successes": None,
     }
     if publisher is None:
         return snap
@@ -109,20 +114,37 @@ def _outbox_snapshot(publisher: Any) -> dict[str, Any]:
         last_err = getattr(publisher, "last_outbox_error", None)
         if last_err:
             snap["last_outbox_error"] = str(last_err)[:200]
-        outbox = getattr(publisher, "_outbox", None)
-        if outbox is not None:
+        # Public API: ResilientPublisher uzerinden pending_count() / dead_letter_count()
+        try:
+            snap["outbox_pending"] = int(publisher.pending_count())
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            snap["outbox_dead_letter"] = int(publisher.dead_letter_count())
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            snap["outbox_max_pending"] = int(publisher.outbox_max_pending)
+        except Exception:  # noqa: BLE001
+            pass
+        # Broker (JetStream) counters — `_broker` private attribute ama
+        # ResilientPublisher API'sinde public bir erişim yok; geçici olarak
+        # buradan okuyoruz. Daha sonra ResilientPublisher.broker_status()
+        # public method ile temizlenebilir.
+        broker = getattr(publisher, "_broker", None)
+        if broker is not None:
             try:
-                snap["outbox_pending"] = int(outbox.pending_count())
+                snap["broker_ready"] = bool(getattr(broker, "is_ready", False))
             except Exception:  # noqa: BLE001
                 pass
-            try:
-                snap["outbox_dead_letter"] = int(outbox.dead_letter_count())
-            except Exception:  # noqa: BLE001
-                pass
-            try:
-                snap["outbox_max_pending"] = int(outbox.max_pending)
-            except Exception:  # noqa: BLE001
-                pass
+            counters_fn = getattr(broker, "counters_snapshot", None)
+            if callable(counters_fn):
+                try:
+                    counters = counters_fn()
+                    snap["broker_publish_failures"] = int(counters.get("publish_failures", 0))
+                    snap["broker_publish_successes"] = int(counters.get("publish_successes", 0))
+                except Exception:  # noqa: BLE001
+                    pass
     except Exception:  # noqa: BLE001
         # Saglik endpoint'i hicbir sekilde crash etmemeli
         pass
@@ -142,11 +164,41 @@ def _make_handler(
     publisher_provider: Any,
     reader_provider: Any = None,
     refresh_token: str = "",
+    info_metrics_auth_required: bool = True,
 ) -> type[BaseHTTPRequestHandler]:
-    """HTTP handler class'ini state'e + metrics'e bagli olarak dinamik ureten helper."""
+    """HTTP handler class'ini state'e + metrics'e bagli olarak dinamik ureten helper.
+
+    Auth modeli:
+      * `/health` ve `/healthz`: HER ZAMAN auth-suz (LB/orchestrator probe icin).
+        Yanit minimal status + issues; recon malzemesi ICERMEZ.
+      * `/info` ve `/metrics`: `info_metrics_auth_required=True` (default) ise
+        Bearer + refresh_token zorunlu. Bu endpoint'ler `instance_id`,
+        `version`, `config_version`, `outbox_pending`, `dead_letter_count`
+        gibi operasyonel sizinti veren bilgileri doner.
+      * `POST /refresh-all`: HER ZAMAN Bearer auth; refresh_token bos ise 503.
+    """
 
     class _Handler(BaseHTTPRequestHandler):
+        def _check_bearer_auth(self) -> bool:
+            """Returns True if request carries valid Bearer token.
+            Otherwise sends 401/503 response and returns False.
+
+            Timing-safe karsilastirma (hmac.compare_digest); refresh_token
+            bos ise 503 (endpoint devre disi)."""
+            if not refresh_token:
+                self.send_response(503)
+                self.end_headers()
+                return False
+            auth = self.headers.get("Authorization", "")
+            expected = f"Bearer {refresh_token}"
+            if not hmac.compare_digest(auth.encode("utf-8"), expected.encode("utf-8")):
+                self.send_response(401)
+                self.end_headers()
+                return False
+            return True
+
         def do_GET(self):  # noqa: N802
+            # /health, /healthz: HER ZAMAN auth-suz. LB/orchestrator probe.
             if self.path in ("/health", "/healthz"):
                 body, status_code = _build_health_body(
                     state=state,
@@ -161,7 +213,10 @@ def _make_handler(
                 )
                 self._respond_json(body, status_code=status_code)
                 return
+            # /info ve /metrics: operasyonel detay icerir; auth gerektir.
             if self.path == "/info":
+                if info_metrics_auth_required and not self._check_bearer_auth():
+                    return  # 401/503 zaten gonderildi
                 body = {
                     "service": "dnp3-gateway",
                     "version": __version__,
@@ -176,6 +231,8 @@ def _make_handler(
                 self._respond_json(body)
                 return
             if self.path == "/metrics":
+                if info_metrics_auth_required and not self._check_bearer_auth():
+                    return
                 outbox_snap = _outbox_snapshot(publisher_provider() if publisher_provider else None)
                 body = {
                     "gateway_code": gateway_code,
@@ -192,9 +249,11 @@ def _make_handler(
         def do_POST(self):  # noqa: N802
             """POST /refresh-all — tum cihazlara anlik integrity poll.
 
-            Auth: Authorization header'i Bearer + refresh_token (= GATEWAY_TOKEN)
-            ile eslesmeli. Token bos ise sadece localhost'tan gelen istek
-            kabul edilir (multi-instance test ortami icin).
+            Auth: Authorization header'i Bearer + refresh_token ile eslesmeli.
+            Karsilastirma timing-safe (hmac.compare_digest). refresh_token
+            bos ise endpoint TAMAMEN devre disidir — guvenlik amacli, "local
+            allow" ozel durumu kaldirildi (container'da client_ip 127.0.0.1
+            yanilticidir).
 
             Backend bu endpoint'i proxy ederek operator'in 'tum sinyalleri
             yenile' butonunu uygular.
@@ -203,21 +262,8 @@ def _make_handler(
                 self.send_response(404)
                 self.end_headers()
                 return
-            # Auth kontrolu
-            auth = self.headers.get("Authorization", "")
-            expected = f"Bearer {refresh_token}" if refresh_token else None
-            if expected is not None:
-                if auth != expected:
-                    self.send_response(401)
-                    self.end_headers()
-                    return
-            else:
-                # Token yoksa sadece local
-                client_ip = (self.client_address[0] or "")
-                if not client_ip.startswith("127.") and client_ip != "::1":
-                    self.send_response(401)
-                    self.end_headers()
-                    return
+            if not self._check_bearer_auth():
+                return  # 401 veya 503 zaten gonderildi
             reader = reader_provider() if reader_provider else None
             if reader is None or not hasattr(reader, "refresh_all_devices"):
                 self._respond_json(
@@ -367,6 +413,7 @@ def start_health_server(
     publisher_provider: Any = None,
     reader_provider: Any = None,
     refresh_token: str = "",
+    info_metrics_auth_required: bool = True,
 ) -> tuple[HTTPServer, GatewayMetrics, int]:
     """Sunucuyu ayaga kaldirir.
 
@@ -400,6 +447,7 @@ def start_health_server(
         publisher_provider=publisher_provider,
         reader_provider=reader_provider,
         refresh_token=refresh_token,
+        info_metrics_auth_required=info_metrics_auth_required,
     )
     server = HTTPServer((host, port), handler_cls)
     actual_port = int(server.server_address[1])

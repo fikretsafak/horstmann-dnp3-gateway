@@ -547,6 +547,7 @@ class Yadnp3TelemetryReader(TelemetryReader):
         scan_interval_sec: int = 5,
         baseline_interval_sec: int = 60,
         log_level: str = "NORMAL",
+        manager_threads: int = 0,
     ) -> None:
         if not _YADNP3_AVAILABLE:
             raise Yadnp3AdapterError(
@@ -557,9 +558,20 @@ class Yadnp3TelemetryReader(TelemetryReader):
         self._default_dnp3_tcp_port = int(default_dnp3_tcp_port)
         self._scan_interval_sec = int(scan_interval_sec)
         self._baseline_interval_sec = int(baseline_interval_sec)
-        # 1 manager, N master. Manager paylasimli executor'unu kullanir.
-        self._manager = opendnp3.DNP3Manager(2)
+        # DNP3Manager IO thread sayisi. Eski sabit 2 thread, 100 cihazli
+        # instance'ta thread doyumu yapiyordu (her cihazin TCP I/O +
+        # scheduler isi tek 2 thread'e diziliyordu). manager_threads=0
+        # verilirse heuristic: max(4, ceil(device_count_hint / 25))
+        # ama device_count_hint constructor'da bilinmiyor; minimum 4 alacagiz.
+        if manager_threads <= 0:
+            resolved_threads = 4
+        else:
+            resolved_threads = max(1, min(64, int(manager_threads)))
+        self._manager = opendnp3.DNP3Manager(resolved_threads)
+        self._manager_threads = resolved_threads
         self._masters: dict[str, _ManagedMaster] = {}
+        # Lock granulariteyi azaltmak icin double-check pattern: lock disinda
+        # hizli dict lookup; sadece master OLUSTURURKEN lock alinir.
         self._lock = threading.Lock()
 
     @staticmethod
@@ -577,6 +589,19 @@ class Yadnp3TelemetryReader(TelemetryReader):
         return int(default_addr)
 
     def _ensure_master(self, device: DeviceConfig) -> _ManagedMaster:
+        """Cihaz icin _ManagedMaster doner — varsa cache'den, yoksa olusturur.
+
+        Double-check pattern: hot-path'te (master zaten var) lock ALINMAZ —
+        dict'i lock-free okuruz (CPython dict thread-safe lookup'a izin
+        verir). Sadece master ilk kez olusturulacaksa lock alip yeniden
+        kontrol + create yapariz. Bu sayede 100 cihazlik cycle'in stabil
+        state'inde her read_device() cagrisinda lock contention olmuyor.
+        """
+        # Hot-path: lock-free dict lookup
+        existing = self._masters.get(device.code)
+        if existing is not None:
+            return existing
+        # Cold-path: master daha once yaratilmadi — lock alip ikinci kontrol
         with self._lock:
             existing = self._masters.get(device.code)
             if existing is not None:

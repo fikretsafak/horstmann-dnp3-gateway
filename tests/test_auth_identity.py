@@ -34,10 +34,25 @@ def test_resolve_instance_id_persists_to_file(monkeypatch: pytest.MonkeyPatch, t
     assert any(state_dir.glob("instance_*.id"))
 
 
+def _set_prod_safe_urls(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Production safeguard validator'inin URL kontrollerini gecmek icin
+    test ortaminda gecerli URL'leri set et. Bu testlerin amaci token
+    dogrulamasi (ensure_credentials_allowed); URL validator bagimsiz olmali.
+
+    Gateway 0.4.x'te:
+      * BACKEND_API_URL prod'da https:// olmali
+      * NATS_URL prod'da bos olamaz, tls:// veya nats:// scheme olmali
+      * RABBITMQ_URL gateway tarafindan kullanilmiyor (LEGACY)
+    """
+    monkeypatch.setenv("BACKEND_API_URL", "https://backend.test/api/v1")
+    monkeypatch.setenv("NATS_URL", "tls://nats.test:4222")
+
+
 def test_production_rejects_placeholder_token(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("APP_ENVIRONMENT", "production")
     monkeypatch.setenv("GATEWAY_TOKEN", "gw-default-token")
     monkeypatch.setenv("GATEWAY_CODE", "GW-001")
+    _set_prod_safe_urls(monkeypatch)
     s = Settings(_env_file=None)  # type: ignore[call-arg]
     with pytest.raises(SystemExit):
         ensure_credentials_allowed(s)
@@ -47,6 +62,7 @@ def test_production_requires_min_length(monkeypatch: pytest.MonkeyPatch) -> None
     monkeypatch.setenv("APP_ENVIRONMENT", "production")
     monkeypatch.setenv("GATEWAY_TOKEN", "short")
     monkeypatch.setenv("GATEWAY_CODE", "GW-001")
+    _set_prod_safe_urls(monkeypatch)
     s = Settings(_env_file=None)  # type: ignore[call-arg]
     with pytest.raises(SystemExit):
         ensure_credentials_allowed(s)

@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import json
 import logging
+import logging.handlers
+import os
 import re
 import sys
 from datetime import datetime, timezone
+from pathlib import Path
 
 # Modul-level redaction registry: bilinen sirlari (token, parola) tutar.
 # Logger formatter'i mesajlarda bu degerleri ***REDACTED*** ile yer degistirir.
@@ -115,7 +118,53 @@ class _TextFormatter(logging.Formatter):
         return _scrub_amqp_passwords(_scrub_message(text))
 
 
-def configure_logging(level: str = "INFO", fmt: str = "text") -> None:
+def _build_formatter(fmt: str) -> logging.Formatter:
+    if fmt.strip().lower() == "json":
+        return _JsonFormatter()
+    return _TextFormatter(
+        fmt="%(asctime)s %(levelname)-5s %(name)s %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+
+def _resolve_log_file_path(
+    template: str,
+    *,
+    gateway_code: str = "",
+    instance_id: str = "",
+) -> Path:
+    """{gateway_code} ve {instance_id} yer tutucularini resolve eder.
+
+    Cozulemeyen yer tutucu (eksik kwarg) literal kalir — file open() asamasinda
+    OSError verirse caller handle eder.
+    """
+    safe_code = (gateway_code or "default").strip() or "default"
+    safe_instance = (instance_id or "").strip() or "noid"
+    # Path safety: gateway_code'da slash/backslash izin verilmiyor (Settings
+    # zaten regex ile sinirliyor) ama defansif olarak temizle.
+    safe_code = safe_code.replace("/", "_").replace("\\", "_")
+    safe_instance = safe_instance.replace("/", "_").replace("\\", "_")
+    try:
+        rendered = template.format(
+            gateway_code=safe_code,
+            instance_id=safe_instance,
+        )
+    except (KeyError, IndexError):
+        # Bilinmeyen yer tutucu — template aynen kalsin
+        rendered = template
+    return Path(rendered)
+
+
+def configure_logging(
+    level: str = "INFO",
+    fmt: str = "text",
+    *,
+    file_path: str = "",
+    file_max_bytes: int = 20 * 1024 * 1024,
+    file_backup_count: int = 10,
+    gateway_code: str = "",
+    instance_id: str = "",
+) -> None:
     """Root logger'i idempotent bicimde yapilandirir.
 
     Birden fazla cagri guvenlidir (handler cogaltilmaz).
@@ -124,6 +173,15 @@ def configure_logging(level: str = "INFO", fmt: str = "text") -> None:
     filter aktif olduktan sonra eklenen secret'lar bir sonraki log'dan itibaren
     geçerli olur. Boot sirasinda ilk cagri configure_logging, sonra
     register_secret(token) ve register_secret(rabbitmq_url) yapilir.
+
+    Argumanlar:
+      level: log seviyesi (INFO, DEBUG vb.)
+      fmt: "text" veya "json"
+      file_path: Bos degilse RotatingFileHandler acilir. {gateway_code} ve
+        {instance_id} yer tutuculari resolve edilir. Disk yazma hatasi
+        gateway'i durdurmamak icin yutulur (sadece stderr'a yazilir).
+      file_max_bytes: Tek log dosyasi maksimum boyut (rotate threshold).
+      file_backup_count: Rotation sonrasi tutulan eski dosya sayisi.
     """
 
     root = logging.getLogger()
@@ -132,21 +190,63 @@ def configure_logging(level: str = "INFO", fmt: str = "text") -> None:
         if getattr(handler, "_dnp3_gateway", False):
             root.removeHandler(handler)
 
-    handler = logging.StreamHandler(stream=sys.stdout)
-    handler._dnp3_gateway = True  # type: ignore[attr-defined]
-    if fmt.strip().lower() == "json":
-        handler.setFormatter(_JsonFormatter())
-    else:
-        handler.setFormatter(
-            _TextFormatter(
-                fmt="%(asctime)s %(levelname)-5s %(name)s %(message)s",
-                datefmt="%Y-%m-%d %H:%M:%S",
-            )
-        )
-    # Filter'i hem handler hem root'a ekle — handler'a eklemek formatter'dan
-    # once cagrilir ki args vs.'da redaction olabilsin.
     redaction_filter = _RedactionFilter()
-    handler.addFilter(redaction_filter)
-    root.addHandler(handler)
+
+    # 1) stdout handler her zaman acik kalir — Docker / NSSM bunu yakalar.
+    stream_handler = logging.StreamHandler(stream=sys.stdout)
+    stream_handler._dnp3_gateway = True  # type: ignore[attr-defined]
+    stream_handler.setFormatter(_build_formatter(fmt))
+    stream_handler.addFilter(redaction_filter)
+    root.addHandler(stream_handler)
+
+    # 2) Rotating dosya handler — sadece LOG_FILE_PATH set edilirse. Per-instance
+    #    log path izolasyonu icin {gateway_code} yer tutucusu resolve edilir.
+    if file_path and file_path.strip():
+        log_path = _resolve_log_file_path(
+            file_path.strip(),
+            gateway_code=gateway_code,
+            instance_id=instance_id,
+        )
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            file_handler = logging.handlers.RotatingFileHandler(
+                filename=str(log_path),
+                maxBytes=max(1024 * 1024, int(file_max_bytes)),
+                backupCount=max(1, int(file_backup_count)),
+                encoding="utf-8",
+                delay=False,
+            )
+            file_handler._dnp3_gateway = True  # type: ignore[attr-defined]
+            file_handler.setFormatter(_build_formatter(fmt))
+            file_handler.addFilter(redaction_filter)
+            # NTFS multi-instance collision'i onlemek icin dosya basina handler
+            # mutex'i Python tarafindan zaten saglanir; ama AYNI dosyaya iki
+            # process yazarsa interleave olur. Caller {gateway_code} yer tutucu
+            # ile per-instance path kullanmali — runtime sade defansif kontrol:
+            try:
+                # Diger Python instance ile cakisma uyarisi (kalin garanti yok,
+                # advisory): aciliminda dosya zaten varsa ve baska proses lock
+                # tutuyorsa OSError gelir — burada en azindan stderr'a not dus.
+                _ = os.stat(str(log_path))
+            except OSError:
+                pass
+            root.addHandler(file_handler)
+            # configure_logging henuz dnp3_gateway logger'i tarafindan
+            # cagiriliyor; ilk log mesajini handler eklendikten SONRA atalim.
+            logging.getLogger("dnp3_gateway").info(
+                "log_file_handler_opened path=%s max_bytes=%s backup_count=%s",
+                log_path,
+                file_max_bytes,
+                file_backup_count,
+            )
+        except OSError as exc:
+            # Disk dolu, izin yok, dizin yaratilamadi — gateway calismaya
+            # devam etsin, sadece stdout'a yazilsin.
+            sys.stderr.write(
+                f"[logging_setup] WARNING: rotating log dosyasi acilamadi "
+                f"path={log_path} error={exc}; sadece stdout aktif.\n"
+            )
+            sys.stderr.flush()
+
     # AMQP baglanti ayrintilari: genelde sadece dnp3_gateway loglari yeterlidir
     logging.getLogger("pika").setLevel(logging.WARNING)

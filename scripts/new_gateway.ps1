@@ -5,8 +5,11 @@
 #   .\scripts\new_gateway.ps1 -Code GW-007 -HealthPort 8027 -BackendUrl http://192.168.1.10:8000/api/v1
 #
 # Ayni PC'de coklu gateway icin her birine ayri kod + ayri health portu verin;
-# ayni RabbitMQ broker'a yayin yapar, backend de aynidir. Cihazlar backend
-# tarafinda gateway-koduna atanir (Smart Logger frontend).
+# tum gateway'ler ayni NATS JetStream broker'ina yayin yapar, backend de
+# aynidir. Cihazlar backend tarafinda gateway-koduna atanir (Smart Logger
+# frontend). RabbitMQ artik telemetri akisi icin kullanilmiyor (0.4.x
+# cutover) — alarm/notification icin backend tarafinda kalir, gateway
+# onunla ilgilenmez.
 
 [CmdletBinding()]
 param(
@@ -20,8 +23,8 @@ param(
     [Parameter(HelpMessage = "Backend API base URL (Smart Logger Process Backend).")]
     [string]$BackendUrl = "http://127.0.0.1:8000/api/v1",
 
-    [Parameter(HelpMessage = "RabbitMQ AMQP URL.")]
-    [string]$RabbitUrl = "amqp://guest:guest@localhost:5672/",
+    [Parameter(HelpMessage = "NATS JetStream URL (gateway'in tek telemetri yayin yolu).")]
+    [string]$NatsUrl = "nats://localhost:4222",
 
     [Parameter(HelpMessage = "Ortam: development | staging | production.")]
     [ValidateSet("development", "staging", "production")]
@@ -91,10 +94,13 @@ BACKEND_API_VERIFY_SSL=true
 CONFIG_REFRESH_SEC=30
 CONFIG_TIMEOUT_SEC=5
 
-# RabbitMQ (Smart Logger ile ortak broker, exchange=hsl.events)
-RABBITMQ_URL=$RabbitUrl
-RABBITMQ_EXCHANGE=hsl.events
-RABBITMQ_ROUTING_KEY=telemetry.raw_received
+# NATS JetStream (PRIMARY — gateway'in tek telemetri yayin yolu)
+# Subject: e1.telemetry.raw.<GATEWAY_CODE>. Backend stream TELEMETRY_RAW
+# bu prefix'i `e1.telemetry.raw.>` wildcard ile yakalar. NATS erisilemezse
+# gateway yine ayaga kalkar; mesajlar outbox'a yazilir, baglanti gelince
+# retrier bosaltir (mesaj kaybi yok).
+NATS_URL=$NatsUrl
+NATS_SUBJECT_PREFIX=e1.telemetry.raw
 
 # Health HTTP (port=0 -> OS rastgele bos port atar; gercek port log'da gorunur)
 WORKER_HEALTH_HOST=127.0.0.1
@@ -120,17 +126,44 @@ LOG_FORMAT=text
 
 Set-Content -Path $OutFile -Value $envContent -Encoding utf8
 
+# Token'i dosyaya yazdiktan SONRA dosya izinlerini kisitla (sadece sahibi okusun).
+# Windows'ta NTFS ACL ile Inheritance kapatip sadece mevcut kullaniciya Read/Write veriyoruz.
+try {
+    $acl = Get-Acl $OutFile
+    $acl.SetAccessRuleProtection($true, $false)  # protection ON, inherited rules OFF
+    $acl.Access | ForEach-Object { $acl.RemoveAccessRule($_) | Out-Null }
+    $currentUser = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+    $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+        $currentUser,
+        "FullControl",
+        "Allow"
+    )
+    $acl.SetAccessRule($rule)
+    Set-Acl -Path $OutFile -AclObject $acl
+} catch {
+    Write-Warning "Dosya izinleri kisitlanamadi: $_  (devam ediliyor)"
+}
+
 Write-Host ""
 Write-Host "Olusturuldu: $OutFile" -ForegroundColor Green
 Write-Host "  GATEWAY_CODE   : $Code"
 Write-Host "  HEALTH_PORT    : $HealthPort"
 Write-Host "  BACKEND_API_URL: $BackendUrl"
-Write-Host "  RABBITMQ_URL   : $RabbitUrl"
+Write-Host "  NATS_URL       : $NatsUrl"
+Write-Host ""
+Write-Host "GATEWAY_TOKEN olusturuldu ve dosyaya yazildi." -ForegroundColor Green
+Write-Host "  -> $OutFile  (icindeki GATEWAY_TOKEN= satirini Smart Logger backend kaydina yapistirin)"
+Write-Host "  -> Konsolda gosterilmiyor: PSReadLine history / screen-share / log aggregator sizintisini onlemek icin."
 Write-Host ""
 Write-Host "Sonraki adimlar:" -ForegroundColor Yellow
-Write-Host "  1. Smart Logger backend'inde bu kodla yeni gateway kaydi olusturun ve token alanina YUKARIDAKI tokeni yapistirin:"
-Write-Host "     $token"
+Write-Host "  1. Backend gateway kaydini olustur: arayuz / API uzerinden ayni Code + ayni TOKEN."
+Write-Host "     Token'i okumak icin (terminal'i kapatip acmadan, sadece ihtiyacin oldugunda):"
+Write-Host "       Select-String -Path $OutFile -Pattern '^GATEWAY_TOKEN='"
 Write-Host "  2. Cihazlari frontend uzerinden bu gateway'e atayin."
 Write-Host "  3. Gateway'i baslatin:"
 Write-Host "       py -m dnp3_gateway --env-file $OutFile"
 Write-Host ""
+
+# Token degiskenini bellekten temizle (best-effort).
+$token = $null
+Remove-Variable token -ErrorAction SilentlyContinue

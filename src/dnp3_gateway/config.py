@@ -27,7 +27,16 @@ class Settings(BaseSettings):
     # ----- Gateway kimligi -----------------------------------------------------
     gateway_code: str = Field(default="GW-001", description="Backend 'gateways.code' ile eslesen kimlik")
     gateway_token: str = Field(default="gw-default-token", description="Backend 'gateways.token' degeri")
-    gateway_name: str = Field(default="Horstmann SN2 Gateway", description="Log/health icin insan-okur isim")
+    gateway_refresh_token: str = Field(
+        default="",
+        description=(
+            "POST /refresh-all icin ayri token (rol ayrimi). Bos birakilirsa "
+            "endpoint devre disi kalir. GATEWAY_TOKEN'dan FARKLI olmali; ayni "
+            "ise backend tokeni leak olunca tum gateway'leri uzaktan yorma "
+            "(DoS) acilir."
+        ),
+    )
+    gateway_name: str = Field(default="EnerjiOne DNP3 Gateway", description="Log/health icin insan-okur isim")
 
     # Ornek/destek: bos ise `GATEWAY_STATE_DIR` altinda kalici uuid dosyasina yazilir
     gateway_instance_id: str = Field(default="", description="Benzersiz proses ornek id (log/baglanti)")
@@ -79,8 +88,76 @@ class Settings(BaseSettings):
         ),
     )
 
-    # ----- RabbitMQ ------------------------------------------------------------
-    rabbitmq_url: str = Field(default="amqp://guest:guest@localhost:5672/")
+    # ----- NATS JetStream (PRIMARY — gateway'in tek telemetri yayinlama yolu) -
+    # Gateway artik tum telemetriyi DIRECT JetStream'e basar. RabbitMQ telemetri
+    # akisindan kaldirildi; sadece backend tarafindaki alarm.created akisi icin
+    # RabbitMQ kullaniliyor — gateway onunla ilgilenmez.
+    #
+    # NATS down olunca: publish hatasi -> outbox'a yazilir -> retrier baglanti
+    # gelince bosaltir. At-least-once garantisi outbox + Nats-Msg-Id broker-side
+    # dedup'i ile saglanir.
+    nats_url: str = Field(
+        default="nats://localhost:4222",
+        description=(
+            "NATS JetStream server adresi (ZORUNLU). Compose icinden "
+            "nats://nats:4222; ayri host'tan nats://<host>:4222."
+        ),
+    )
+    nats_subject_prefix: str = Field(
+        default="e1.telemetry.raw",
+        description=(
+            "JetStream subject prefix. Konkre subject `<prefix>.<gateway_code>` "
+            "seklinde olusturulur (orn. e1.telemetry.raw.GW-001). Backend "
+            "stream TELEMETRY_RAW bu prefix'i `e1.telemetry.raw.>` wildcard "
+            "ile yakalar."
+        ),
+    )
+    nats_connect_timeout_sec: int = Field(
+        default=5,
+        ge=1,
+        le=60,
+        description=(
+            "NATS connect timeout. Kisa tutun ki gateway startup'i NATS yokken "
+            "bloklanmasin — connect basarisiz olsa bile gateway ayaga kalkar, "
+            "mesajlar outbox'a yazilir, baglanti gelince retrier bosaltir."
+        ),
+    )
+    nats_publish_timeout_sec: float = Field(
+        default=0.5,
+        ge=0.1,
+        le=30.0,
+        description=(
+            "JetStream publish bekleme suresi (sn). Tek mesaj icin. Tipik "
+            "yerel cluster'da <10ms cevap; agresif kucuk timeout broker "
+            "yavasladiginda mesajin outbox'a hizla dusmesini saglar. 0.5sn "
+            "default: 100 cihaz x 30 sinyal paralel cycle'da bile cycle "
+            "timeout'a (120s) zarar vermeden, broker yavasladiginda kontrollu "
+            "outbox akisina geciyor. Slow-network deploylar icin >=2.0 "
+            "manuel set edilebilir."
+        ),
+    )
+    # Geriye uyumluluk: nats_dual_publish_enabled artik anlamsiz cunku JetStream
+    # tek yol. Eski .env'ler kirilmasin diye field tutulur ama goz ardi edilir.
+    # Default False — yeni deploy'lar bu flag'i aktive etmemeli; bilincli set
+    # eden operator startup'ta DEPRECATED uyarisi alir (boot warning).
+    nats_dual_publish_enabled: bool = Field(
+        default=False,
+        description=(
+            "DEPRECATED — JetStream artik tek primary yol; bu bayrak goz "
+            "ardi edilir. Eski .env'lerdeki 'true' degerleri sessizce kabul "
+            "edilir; main.py boot'ta WARN log atar."
+        ),
+    )
+
+    # ----- RabbitMQ (LEGACY — telemetri akisindan kaldirildi) -----------------
+    # Bu alanlar yalnizca geriye uyumluluk + log redaction icin saklaniyor;
+    # gateway artik RabbitMQ'ya BAGLANMIYOR. Alarm mesajlari backend tarafinda
+    # RabbitMQ'da kalmaya devam ediyor (gateway onunla ilgilenmez). .env'de
+    # RABBITMQ_URL bos kalabilir — sadece eski deploylar icin tutuluyor.
+    rabbitmq_url: str = Field(
+        default="",
+        description="LEGACY/DEPRECATED — gateway artik RabbitMQ kullanmiyor. Bos birakin.",
+    )
     rabbitmq_exchange: str = Field(default="hsl.events")
     rabbitmq_routing_key: str = Field(default="telemetry.raw_received")
 
@@ -253,6 +330,16 @@ class Settings(BaseSettings):
         default=False,
         description="nfm-dnp3 ham TX/RX cercevelerini loglar (sorun giderme; cok gurultulu)",
     )
+    dnp3_manager_threads: int = Field(
+        default=0,
+        ge=0,
+        le=64,
+        description=(
+            "yadnp3 (opendnp3.DNP3Manager) icin IO thread sayisi. 0 = otomatik "
+            "(adapter heuristic, minimum 4). 100 cihazli instance icin 4-8 "
+            "onerilir; daha azinda thread doyumu olur (eski sabit 2 yetersiz)."
+        ),
+    )
 
     # ----- Logging -------------------------------------------------------------
     log_level: str = Field(default="INFO")
@@ -261,6 +348,36 @@ class Settings(BaseSettings):
     # log aggregator'a (ELK, Loki) gidip leak olabilir. Kasitli "false" guvenli.
     # Ihtiyac halinde .env: SHOW_GATEWAY_TOKEN_ON_START=true ile geri acilabilir.
     show_gateway_token_on_start: bool = Field(default=False)
+
+    # Rotating dosya log'lama. NSSM/Windows servis stdout'u tek dosyaya yonlendirir
+    # ama rotasyon YAPMAZ — 600 cihazli yuk altinda saatler icinde disk dolar.
+    # LOG_FILE_PATH set edilirse her gateway instance kendi rotating dosyasina
+    # yazar. {gateway_code} yer tutucu otomatik resolve edilir; boylece tek
+    # template ile coklu instance'lar ayrik dosyalara yazar.
+    log_file_path: str = Field(
+        default="",
+        description=(
+            "Rotating log dosyasi yolu. Bos ise sadece stdout'a yazilir (mevcut "
+            "davranis, Docker icin uygundur). Windows NSSM kurulumlarinda set "
+            "edin: orn. 'C:/ProgramData/horstmann/dnp3-gateway/{gateway_code}.log'. "
+            "Yer tutucular: {gateway_code}, {instance_id}."
+        ),
+    )
+    log_file_max_bytes: int = Field(
+        default=20 * 1024 * 1024,  # 20 MB
+        ge=1024 * 1024,  # 1 MB min
+        le=2 * 1024 * 1024 * 1024,  # 2 GB max
+        description="Tek log dosyasi maksimum boyutu (byte). Asilirsa rotate.",
+    )
+    log_file_backup_count: int = Field(
+        default=10,
+        ge=1,
+        le=100,
+        description=(
+            "Kac eski log dosyasi tutulsun (rotation sonrasi). 10 x 20MB = 200MB "
+            "instance basina ust sinir."
+        ),
+    )
 
     # ----- Backend HTTP client guvenlik ---------------------------------------
     # Backend config response icin maksimum boyut (10 MB). Ustu raise eder
@@ -348,41 +465,89 @@ class Settings(BaseSettings):
     @field_validator("rabbitmq_url")
     @classmethod
     def _validate_rabbitmq_url(cls, v: str) -> str:
-        if not v or not v.strip():
-            raise ValueError("RABBITMQ_URL bos olamaz")
+        # LEGACY: gateway artik RabbitMQ kullanmiyor. Bos izinli; eski .env'lerden
+        # gelen amqp:// degerleri de gecerli (sadece doğrulanir, kullanilmaz).
+        s = (v or "").strip()
+        if not s:
+            return ""
         try:
-            parsed = urlparse(v.strip())
+            parsed = urlparse(s)
         except Exception as exc:  # noqa: BLE001
             raise ValueError(f"RABBITMQ_URL parse edilemedi: {exc}") from exc
         if parsed.scheme not in ("amqp", "amqps"):
             raise ValueError(
                 f"RABBITMQ_URL scheme amqp/amqps olmali (gelen: '{parsed.scheme}')"
             )
-        return v.strip()
+        return s
 
     @model_validator(mode="after")
     def _validate_production_safeguards(self) -> "Settings":
         """Production / staging ortaminda guvenlik kontrolleri.
 
         * TLS verify ZORUNLU — kapatilirsa SystemExit (MITM koruma).
-        * Token MIN length staging=16, production=32 (ensure_credentials_allowed
-          auth katmaninda da kontrol eder; burada bagimsiz double-check).
+        * BACKEND_API_URL https:// olmali (production/staging) — clear-text
+          gateway token MITM koruma.
+        * NATS_URL bos olamaz (production); tls:// onerilir, nats://
+          (clear-text) kabul ama uyari log atilir. Gateway 0.4.x'te NATS
+          telemetri akisinin tek yoludur, eksikse cihaz verisi cati'ya
+          ulasmaz.
+        * Token MIN length staging=16, production=32.
         * SHOW_GATEWAY_TOKEN_ON_START production'da kapali olmali — leak riski.
+        * GATEWAY_REFRESH_TOKEN, GATEWAY_TOKEN'dan FARKLI olmali — ayni ise
+          backend tokeni leak olunca uzaktan tum cihazlari yorma kapisi acilir.
+
+        NOT: RABBITMQ_URL artik gateway tarafindan kullanilmiyor (alarm/event
+        akisi backend tarafinda kalir). Bu validator RabbitMQ scheme'i kontrol
+        etmez; gateway baglanti kurmaz.
         """
         env = (self.app_environment or "development").strip().lower()
-        if env in ("production", "prod", "staging", "stg"):
+        is_prod = env in ("production", "prod")
+        is_stg_or_prod = is_prod or env in ("staging", "stg")
+        if is_stg_or_prod:
             if not self.backend_api_verify_ssl:
                 raise ValueError(
                     f"GUVENLIK: APP_ENVIRONMENT={env} ortaminda "
                     "BACKEND_API_VERIFY_SSL=False olamaz (MITM riski). "
                     "Sertifika sorunu varsa BACKEND_API_CA_PATH ile kendi CA bundle'inizi verin."
                 )
-            if env in ("production", "prod") and self.show_gateway_token_on_start:
+            if not self.backend_api_url.lower().startswith("https://"):
                 raise ValueError(
-                    "GUVENLIK: APP_ENVIRONMENT=production'da "
-                    "SHOW_GATEWAY_TOKEN_ON_START=True olamaz (token log'da leak olur). "
-                    "Token'i .env'den dogrulayin."
+                    f"GUVENLIK: APP_ENVIRONMENT={env} ortaminda "
+                    f"BACKEND_API_URL https:// olmali (gelen: {self.backend_api_url!r}). "
+                    "Clear-text HTTP uzerinden gateway token MITM ile calinabilir."
                 )
+            if is_prod:
+                # NATS scheme kontrolu: production'da boş olamaz; tls://
+                # onerilir, nats:// (clear-text) kabul ama riskli. 0.4.x'te
+                # NATS telemetri akisinin TEK yolu.
+                nats_url_lower = (self.nats_url or "").strip().lower()
+                if not nats_url_lower:
+                    raise ValueError(
+                        "GUVENLIK: APP_ENVIRONMENT=production'da NATS_URL "
+                        "bos olamaz. Gateway telemetriyi JetStream'e basar; "
+                        "URL set edilmezse hicbir telemetri cati'ya iletilmez."
+                    )
+                if not nats_url_lower.startswith(("tls://", "nats://")):
+                    raise ValueError(
+                        f"GUVENLIK: APP_ENVIRONMENT=production'da NATS_URL "
+                        f"tls:// veya nats:// scheme olmali (gelen: {self.nats_url!r})."
+                    )
+                if self.show_gateway_token_on_start:
+                    raise ValueError(
+                        "GUVENLIK: APP_ENVIRONMENT=production'da "
+                        "SHOW_GATEWAY_TOKEN_ON_START=True olamaz (token log'da leak olur). "
+                        "Token'i .env'den dogrulayin."
+                    )
+                if (
+                    self.gateway_refresh_token
+                    and self.gateway_token
+                    and self.gateway_refresh_token.strip() == self.gateway_token.strip()
+                ):
+                    raise ValueError(
+                        "GUVENLIK: APP_ENVIRONMENT=production'da GATEWAY_REFRESH_TOKEN, "
+                        "GATEWAY_TOKEN ile AYNI olamaz. Rol ayrimi icin farkli, "
+                        "yuksek-entropy bir token kullanin."
+                    )
         return self
 
     @property

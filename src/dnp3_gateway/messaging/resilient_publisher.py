@@ -1,12 +1,15 @@
-"""RabbitPublisher + Outbox wrapper: at-least-once, kaybolmayan teslimat.
+"""Broker + Outbox wrapper: at-least-once, kaybolmayan teslimat.
+
+Gateway 0.4.x'te primary broker = JetStreamPublisher (NATS). Legacy
+RabbitPublisher modulu rollback amaciyla duruyor (kullanilmiyor).
 
 Akis:
   poller -> ResilientPublisher.publish(payload, ...)
               |
               v
-        RabbitPublisher.publish (gercek broker)
+        broker.publish (JetStream — gercek yayin)
               |
-              +-- basarili    -> done (broker confirm aldi)
+              +-- basarili    -> done (broker ack aldi)
               |
               +-- exception  -> Outbox.enqueue (SQLite, kalici)
                                 ardindan return (no raise)
@@ -22,8 +25,9 @@ Disk-full / outbox-full circuit breaker:
   * Cevirdigimiz davranis: ResilientPublisher OutboxFullError'i RAISE eder
     (eski "MESSAGE LOST" sessiz drop yerine). Poller yakalayip cycle'i kirar.
 
-Mevcut `RabbitPublisher` API'sini birebir taklit eder; poller degisiklik
-gerektirmez (ayni `publish(...)` imzasi).
+Broker API kontrati: `publish(payload, *, message_id, correlation_id, headers)`
+imzasini destekleyen herhangi bir publisher (JetStreamPublisher, eski
+RabbitPublisher). Caller bu wrapping ile broker degisikligine duyarsiz.
 """
 
 from __future__ import annotations
@@ -34,15 +38,31 @@ import time
 from typing import Any
 
 from dnp3_gateway.messaging.outbox import Outbox, OutboxFullError
-from dnp3_gateway.messaging.rabbit_publisher import RabbitPublisher
 
 logger = logging.getLogger(__name__)
 
 
 class ResilientPublisher:
-    def __init__(self, *, broker: RabbitPublisher, outbox: Outbox) -> None:
+    def __init__(
+        self,
+        *,
+        broker: Any,
+        outbox: Outbox,
+        secondary_publisher: Any = None,
+    ) -> None:
+        """
+        broker: asil yayinci. JetStreamPublisher (yeni; default) veya legacy
+          RabbitPublisher olabilir — ikisi de ayni `publish(payload, *,
+          message_id, correlation_id, headers)` imzasini destekler. Mesaj
+          kaybı garantisi outbox + retrier ile saglanir.
+        outbox: broker dustugunde mesajlari kalici tutar; retrier thread bosaltir.
+        secondary_publisher: OPSIYONEL ikinci yayin (legacy dual-publish modu;
+          artik default kullanilmiyor). Birincil basari sonrasi BEST-EFFORT
+          yayin yapilir; hata birincil akisi ETKILEMEZ, sadece counter+log.
+        """
         self._broker = broker
         self._outbox = outbox
+        self._secondary = secondary_publisher
         self._consecutive_failures = 0
         # Disk-full / outbox-full circuit breaker durumu (health endpoint
         # ve poller cycle bunu okur).
@@ -50,6 +70,11 @@ class ResilientPublisher:
         self._outbox_full: bool = False
         self._outbox_full_since: float | None = None
         self._last_outbox_error: str | None = None
+        # Secondary publisher icin ayri sayaclar (legacy dual-publish). Primary
+        # broker davranisini etkilemez, sadece izleme.
+        self._secondary_failures = 0
+        self._secondary_successes = 0
+        self._secondary_warn_thresholds = {1, 10, 100, 1000}
 
     @property
     def outbox_full(self) -> bool:
@@ -112,6 +137,14 @@ class ResilientPublisher:
             # dondu, retrier outbox'i bosaltacak)
             if self._outbox_full:
                 self._clear_outbox_full()
+            # Secondary publisher (legacy dual-publish; default kullanilmaz) —
+            # best-effort. Hata primary akisi ETKILEMEZ; sadece sayac+log.
+            self._publish_secondary_best_effort(
+                payload,
+                message_id=message_id,
+                correlation_id=correlation_id,
+                headers=headers,
+            )
         except Exception as exc:  # noqa: BLE001
             self._consecutive_failures += 1
             try:
@@ -128,8 +161,8 @@ class ResilientPublisher:
                 self._set_outbox_full(str(full_exc))
                 logger.error(
                     "outbox_full_circuit_breaker message_id=%s pending=%d limit=%d "
-                    "publish_error=%s — POLLER DURDURULMALI, RabbitMQ broker'a uzun "
-                    "suredir baglanilamiyor olabilir",
+                    "publish_error=%s — POLLER DURDURULMALI, broker (NATS JetStream) "
+                    "uzun suredir erisilemiyor olabilir",
                     message_id,
                     self._outbox.pending_count(),
                     self._outbox.max_pending,
@@ -162,6 +195,34 @@ class ResilientPublisher:
 
     def close(self) -> None:
         self._broker.close()
+        if self._secondary is not None:
+            try:
+                self._secondary.close()
+            except Exception:  # noqa: BLE001
+                logger.debug("secondary_publisher_close_error", exc_info=True)
+
+    # ---- Public outbox accessors (poller/health icin) ------------------------
+    # Eski kod publisher._outbox'a private erisim yapiyordu ("None and X or -1"
+    # antipattern dahil). Bu method'lar dis dunyaya kontrol edilebilir bir
+    # API sunar.
+    def pending_count(self) -> int:
+        try:
+            return int(self._outbox.pending_count())
+        except Exception:  # noqa: BLE001
+            return -1
+
+    def dead_letter_count(self) -> int:
+        try:
+            return int(self._outbox.dead_letter_count())
+        except Exception:  # noqa: BLE001
+            return -1
+
+    @property
+    def outbox_max_pending(self) -> int:
+        try:
+            return int(self._outbox.max_pending)
+        except Exception:  # noqa: BLE001
+            return -1
 
     # Outbox retrier publish_fn icin kullanilan kanca: row -> broker.publish()
     def publish_outbox_row(self, row: dict[str, Any]) -> None:
@@ -175,3 +236,61 @@ class ResilientPublisher:
         # breaker'i da temizle.
         if self._outbox_full:
             self._clear_outbox_full()
+        # Secondary publish: outbox'tan gec de olsa JetStream'e kopya gonderelim.
+        # Nats-Msg-Id (message_id) dedup'i sayesinde tekrarli denemeler sorun
+        # cikarmaz.
+        self._publish_secondary_best_effort(
+            row["payload"],
+            message_id=row["message_id"],
+            correlation_id=row.get("correlation_id"),
+            headers=row.get("headers"),
+        )
+
+    # ------------------------------------------------------------------ ---
+    def _publish_secondary_best_effort(
+        self,
+        payload: dict[str, Any],
+        *,
+        message_id: str,
+        correlation_id: str | None,
+        headers: dict[str, Any] | None,
+    ) -> None:
+        """Secondary publisher'a yayinla — basarisizliklari YUTAR.
+
+        Bu fonksiyon PRIMARY broker akisindan TAMAMEN BAGIMSIZ. Hicbir
+        kosulda exception yaymaz. Counter ve seyrek loglar tutulur (1, 10,
+        100, 1000 ve sonra 1000'erli) ki sessiz olmasin.
+        """
+        if self._secondary is None:
+            return
+        try:
+            self._secondary.publish(
+                payload,
+                message_id=message_id,
+                correlation_id=correlation_id,
+                headers=headers,
+            )
+            self._secondary_successes += 1
+            self._secondary_failures = 0  # ust uste basari → counter sifirla
+        except Exception as exc:  # noqa: BLE001
+            self._secondary_failures += 1
+            should_log = (
+                self._secondary_failures in self._secondary_warn_thresholds
+                or self._secondary_failures % 1000 == 0
+            )
+            if should_log:
+                logger.warning(
+                    "secondary_publisher_failed message_id=%s error=%s "
+                    "consecutive=%s (RabbitMQ akisi devam ediyor)",
+                    message_id,
+                    exc,
+                    self._secondary_failures,
+                )
+
+    @property
+    def secondary_failures(self) -> int:
+        return self._secondary_failures
+
+    @property
+    def secondary_successes(self) -> int:
+        return self._secondary_successes

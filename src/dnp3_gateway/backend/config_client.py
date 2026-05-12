@@ -15,6 +15,7 @@ refresh yapilmaz. Degistiginde `GatewayState.update()` true doner ve log'a
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -268,66 +269,255 @@ class BackendConfigClient:
         return _parse_gateway_config(data, default_gateway_code=self.gateway_code)
 
 
+# Schema-defansif sabitler — backend kompromize olsa bile gateway'in
+# kontrolsuz buyume / kaynak tukenme riskini sinirlar.
+#
+#   MAX_DEVICES_HARD_LIMIT: Tek gateway icin 1000 cihaz cikis durumunda bile
+#     6 instance x 1000 = 6000 cihaz. Backend 10K cihaz config'i pushlasa
+#     gateway TCP socket exhaustion'a girer; bu limitle kontrollu reddet.
+#   MAX_SIGNALS_HARD_LIMIT: 1 cihaz x ~200 sinyal x 1000 cihaz = 200K sinyal
+#     katalogu ust sinir.
+#   MAX_CODE_LENGTH / MAX_LABEL_LENGTH: string field'lar; XSS/log injection +
+#     bellek koruma.
+_MAX_DEVICES_HARD_LIMIT = 1000
+_MAX_SIGNALS_HARD_LIMIT = 5000
+_MAX_CODE_LENGTH = 64
+_MAX_LABEL_LENGTH = 256
+_MAX_UNIT_LENGTH = 32
+
+
+def _truncate(value: str, max_len: int) -> str:
+    """Uzun string'i kesip uyari log atar (config tarafi sessiz silmek yerine
+    bozulmus payload'u tespit edilebilir biraksin)."""
+    if value is None:
+        return ""
+    s = str(value)
+    if len(s) <= max_len:
+        return s
+    import logging as _logging
+    _logging.getLogger(__name__).warning(
+        "config_field_truncated len=%d max=%d preview=%r",
+        len(s),
+        max_len,
+        s[: min(40, max_len)],
+    )
+    return s[:max_len]
+
+
+def _is_safe_device_ip(ip: str) -> bool:
+    """Cihaz IP'sinin formati gecerli mi? Bos string TRUE (`initiating` modunda
+    IP yok). Gercek IP varsa ipaddress.ip_address ile parse edilebilir olmali
+    (hostname formatlari da `127.0.0.1` veya `192.168.x.x` veya FQDN'dir, ama
+    burada strict IP istemiyoruz cunku saha cihazlari hostname ile gelebilir).
+    Bu validator yalniz acik bozulmalari yakalamak icin — Backend kompromize
+    olunca 'http://attacker.com' gibi URL gelirse reddedilsin diye.
+    """
+    if not ip or not ip.strip():
+        return True
+    s = ip.strip()
+    # URL scheme veya path yasak (cihaz IP'si)
+    if "://" in s or "/" in s or "\\" in s or " " in s:
+        return False
+    return True
+
+
+def _safe_int(value: Any, default: int, *, lo: int, hi: int) -> int:
+    """Int parse + clamping. Negatif/asimi/None hatasiz default'a dusurur.
+
+    Backend kompromize olsa veya bozuk veri gelse cihaz reddedilsin yerine
+    default'la calismaya devam edebilsin diye truncate ediyoruz; ancak agir
+    kaymalar (orn. dnp3_address=-1) sessizce maskelenmemeli — caller
+    `default == lo/hi clamp` semantigine guvenmemeli.
+    """
+    if value is None or value == "":
+        return default
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return default
+    if n < lo or n > hi:
+        # Aralik disinda → default'a dus; caller log atar (defansif)
+        return default
+    return n
+
+
+def _safe_finite_float(value: Any, default: float) -> float:
+    """Float parse + finite kontrolu. inf/nan -> default. JSON payload
+    poisoning'i onler (scale='inf' veya 'nan' ile JetStream consumer
+    parser'ini patlatma)."""
+    if value is None or value == "":
+        return default
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return default
+    if not math.isfinite(f):
+        return default
+    return f
+
+
 def _parse_gateway_config(data: dict[str, Any], *, default_gateway_code: str) -> GatewayConfig:
-    """Bos/bozuk alanlari varsayilanlarla doldurarak GatewayConfig ureten helper."""
+    """Bos/bozuk alanlari varsayilanlarla doldurarak GatewayConfig ureten helper.
+
+    Defansif schema validation:
+      - Devices/signals listesi MAX hard limit'e gore truncate edilir (warn log).
+      - String field'lar maksimum uzunlukta truncate edilir.
+      - IP field'i acik bozulmalara (URL, path) karsi reddedilir.
+    Backend kompromize olunca gateway'in kaynak tuketimi/log injection'la
+    yikilmasini onler.
+    """
 
     # Env flag (default True): loopback device IP'yi container icinde
     # host.docker.internal'a cevir. Tipik kurulum (cati yazilim + simulator
     # ayni Windows host'unda) icin gerekli; ozel saha kurulumlarinda
     # kapatilabilir (REWRITE_LOOPBACK_TO_HOST=false).
+    import logging as _logging
     import os as _os
 
     rewrite = (_os.environ.get("REWRITE_LOOPBACK_TO_HOST", "true").strip().lower()
                not in ("0", "false", "no", "off"))
 
     devices_raw = data.get("devices") or []
-    devices = [
-        DeviceConfig(
-            code=str(item["code"]),
-            name=str(item.get("name") or item["code"]),
-            ip_address=_rewrite_loopback_ip(
-                str(item.get("ip_address") or ""), enabled=rewrite
-            ),
-            dnp3_address=int(item.get("dnp3_address", 1) or 1),
-            dnp3_tcp_port=_parse_optional_dnp3_tcp_port(item),
-            master_address=_parse_optional_master_address(item),
-            ip_endpoint_type=(
-                str(item.get("ip_endpoint_type") or "listening").strip().lower()
-                if str(item.get("ip_endpoint_type") or "").strip().lower() in ("initiating", "listening")
-                else "listening"
-            ),
-            master_ip_port=(
-                int(item["master_ip_port"])
-                if item.get("master_ip_port") not in (None, "", 0) and 1 <= int(item["master_ip_port"]) <= 65535
-                else None
-            ),
-            poll_interval_sec=int(item.get("poll_interval_sec", 5) or 5),
-            timeout_ms=int(item.get("timeout_ms", 3000) or 3000),
-            retry_count=int(item.get("retry_count", 2) or 2),
-            signal_profile=str(item.get("signal_profile") or "horstmann_sn2_fixed"),
+    if not isinstance(devices_raw, list):
+        raise GatewayConfigError(
+            f"config response 'devices' list olmali (gelen tip: {type(devices_raw).__name__})"
         )
-        for item in devices_raw
-        if item.get("code")
-    ]
+    if len(devices_raw) > _MAX_DEVICES_HARD_LIMIT:
+        _logging.getLogger(__name__).error(
+            "config_devices_overflow received=%d hard_limit=%d — fazlasi yok sayilacak. "
+            "Backend kompromize olmus olabilir; INSTALLER'i bilgilendirin.",
+            len(devices_raw),
+            _MAX_DEVICES_HARD_LIMIT,
+        )
+        devices_raw = devices_raw[:_MAX_DEVICES_HARD_LIMIT]
+    devices: list[DeviceConfig] = []
+    rejected_ips = 0
+    for item in devices_raw:
+        if not isinstance(item, dict) or not item.get("code"):
+            continue
+        raw_ip = str(item.get("ip_address") or "")
+        if not _is_safe_device_ip(raw_ip):
+            rejected_ips += 1
+            _logging.getLogger(__name__).warning(
+                "config_device_rejected_unsafe_ip code=%r ip=%r — backend bozuk "
+                "veya kompromize, cihaz atlandi",
+                item.get("code"),
+                raw_ip[:80],
+            )
+            continue
+        try:
+            # DNP3 link layer adresi: standart aralik 0-65519 (RFC: 65520-65535
+            # rezerve). Disindaki degerler segfault uretebilir bazi binding'lerde.
+            dnp3_addr = _safe_int(item.get("dnp3_address"), 1, lo=0, hi=65519)
+            if item.get("dnp3_address") not in (None, "") and dnp3_addr != int(
+                item.get("dnp3_address") or 0
+            ):
+                _logging.getLogger(__name__).warning(
+                    "config_dnp3_address_out_of_range code=%r received=%r clamped=%d",
+                    item.get("code"),
+                    item.get("dnp3_address"),
+                    dnp3_addr,
+                )
+            devices.append(
+                DeviceConfig(
+                    code=_truncate(item["code"], _MAX_CODE_LENGTH),
+                    name=_truncate(item.get("name") or item["code"], _MAX_LABEL_LENGTH),
+                    ip_address=_rewrite_loopback_ip(raw_ip, enabled=rewrite),
+                    dnp3_address=dnp3_addr,
+                    dnp3_tcp_port=_parse_optional_dnp3_tcp_port(item),
+                    master_address=_parse_optional_master_address(item),
+                    ip_endpoint_type=(
+                        str(item.get("ip_endpoint_type") or "listening").strip().lower()
+                        if str(item.get("ip_endpoint_type") or "").strip().lower() in ("initiating", "listening")
+                        else "listening"
+                    ),
+                    master_ip_port=(
+                        int(item["master_ip_port"])
+                        if item.get("master_ip_port") not in (None, "", 0) and 1 <= int(item["master_ip_port"]) <= 65535
+                        else None
+                    ),
+                    # Reasonable defaults + clamping (poll_interval cok kucuk
+                    # ise gateway cycle'i tikar; cok buyuk ise hic okumaz).
+                    poll_interval_sec=_safe_int(
+                        item.get("poll_interval_sec"), 5, lo=1, hi=3600
+                    ),
+                    timeout_ms=_safe_int(item.get("timeout_ms"), 3000, lo=100, hi=60000),
+                    retry_count=_safe_int(item.get("retry_count"), 2, lo=0, hi=20),
+                    signal_profile=_truncate(
+                        item.get("signal_profile") or "horstmann_sn2_fixed",
+                        _MAX_CODE_LENGTH,
+                    ),
+                )
+            )
+        except (TypeError, ValueError) as exc:
+            _logging.getLogger(__name__).warning(
+                "config_device_parse_failed code=%r error=%s — cihaz atlandi",
+                item.get("code"),
+                exc,
+            )
+    if rejected_ips:
+        _logging.getLogger(__name__).error(
+            "config_rejected_devices count=%d — schema validation",
+            rejected_ips,
+        )
 
     signals_raw = data.get("signals") or []
-    signals = [
-        SignalConfig(
-            key=str(item["key"]),
-            label=str(item.get("label") or item["key"]),
-            unit=(str(item["unit"]) if item.get("unit") else None),
-            source=str(item.get("source") or "master"),
-            dnp3_class=str(item.get("dnp3_class") or "Class 1"),
-            data_type=str(item.get("data_type") or "analog"),
-            dnp3_object_group=int(item.get("dnp3_object_group", 30) or 30),
-            dnp3_index=int(item.get("dnp3_index", 0) or 0),
-            scale=float(item.get("scale", 1.0) or 1.0),
-            offset=float(item.get("offset", 0.0) or 0.0),
-            supports_alarm=bool(item.get("supports_alarm", False)),
+    if not isinstance(signals_raw, list):
+        raise GatewayConfigError(
+            f"config response 'signals' list olmali (gelen tip: {type(signals_raw).__name__})"
         )
-        for item in signals_raw
-        if item.get("key")
-    ]
+    if len(signals_raw) > _MAX_SIGNALS_HARD_LIMIT:
+        _logging.getLogger(__name__).error(
+            "config_signals_overflow received=%d hard_limit=%d — fazlasi yok sayilacak.",
+            len(signals_raw),
+            _MAX_SIGNALS_HARD_LIMIT,
+        )
+        signals_raw = signals_raw[:_MAX_SIGNALS_HARD_LIMIT]
+
+    signals: list[SignalConfig] = []
+    for item in signals_raw:
+        if not isinstance(item, dict) or not item.get("key"):
+            continue
+        try:
+            # scale / offset: inf/nan reddet — JetStream consumer'a sizar ve
+            # json.dumps `Infinity` cikarir (allow_nan=True default), bazi
+            # tag-engine parser'lari bunu reject eder veya sessizce drop eder.
+            raw_scale = item.get("scale")
+            raw_offset = item.get("offset")
+            scale_val = _safe_finite_float(raw_scale, 1.0)
+            offset_val = _safe_finite_float(raw_offset, 0.0)
+            # _safe_finite_float "inf"/"nan"/parse hatasinda default'a duser.
+            # Default'a indirilen anlamli bir degerse log atalim (saldiri /
+            # backend bozulmasi sinyali).
+            if raw_scale not in (None, "", 1.0, "1.0") and scale_val == 1.0:
+                _logging.getLogger(__name__).warning(
+                    "config_signal_scale_invalid key=%r received=%r -> default 1.0",
+                    item.get("key"),
+                    raw_scale,
+                )
+            signals.append(
+                SignalConfig(
+                    key=_truncate(item["key"], _MAX_CODE_LENGTH),
+                    label=_truncate(item.get("label") or item["key"], _MAX_LABEL_LENGTH),
+                    unit=(_truncate(item["unit"], _MAX_UNIT_LENGTH) if item.get("unit") else None),
+                    source=_truncate(item.get("source") or "master", _MAX_CODE_LENGTH),
+                    dnp3_class=_truncate(item.get("dnp3_class") or "Class 1", _MAX_CODE_LENGTH),
+                    data_type=_truncate(item.get("data_type") or "analog", _MAX_CODE_LENGTH),
+                    # DNP3 grup ID'leri standartta 1-120; saglik icin 0-255 clamp.
+                    dnp3_object_group=_safe_int(item.get("dnp3_object_group"), 30, lo=0, hi=255),
+                    # DNP3 index 16-bit (0-65535).
+                    dnp3_index=_safe_int(item.get("dnp3_index"), 0, lo=0, hi=65535),
+                    scale=scale_val,
+                    offset=offset_val,
+                    supports_alarm=bool(item.get("supports_alarm", False)),
+                )
+            )
+        except (TypeError, ValueError) as exc:
+            _logging.getLogger(__name__).warning(
+                "config_signal_parse_failed key=%r error=%s — sinyal atlandi",
+                item.get("key"),
+                exc,
+            )
 
     try:
         refresh_nonce = int(data.get("refresh_nonce", 0) or 0)

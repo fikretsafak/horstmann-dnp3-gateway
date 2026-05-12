@@ -26,17 +26,19 @@ def build_adapter(settings: Settings) -> TelemetryReader:
 
         logger.info(
             "adapter_selected mode=dnp3 library=yadnp3 (OpenDNP3) local_addr=%s default_tcp=%s "
-            "scan=%ss baseline=%ss",
+            "scan=%ss baseline=%ss manager_threads=%s",
             settings.dnp3_local_address,
             settings.dnp3_tcp_port,
             settings.default_poll_interval_sec,
             settings.dnp3_event_baseline_interval_sec,
+            settings.dnp3_manager_threads if settings.dnp3_manager_threads > 0 else "auto",
         )
         return Yadnp3TelemetryReader(
             local_address=settings.dnp3_local_address,
             default_dnp3_tcp_port=settings.dnp3_tcp_port,
             scan_interval_sec=settings.default_poll_interval_sec,
             baseline_interval_sec=settings.dnp3_event_baseline_interval_sec,
+            manager_threads=settings.dnp3_manager_threads,
         )
 
     if library == "dnp3py":

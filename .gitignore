@@ -28,7 +28,10 @@ gateways/
 hsl-gw-*.yml
 hsl-gw-*.env
 
-# Local multi-instance test env dosyalari (token icerir, ornek degil)
-.env.gw*
+# Local multi-instance test env dosyalari (token icerir, ornek degil).
+# Genis pattern: .env.<bir-sey> tum varyasyonlari yakalar (.env.GW-007, .env.gw-001,
+# .env.staging vb.). Tek dosya .env.example commit edilir; o secret icermez.
+.env.*
+!.env.example
 
 .claude/

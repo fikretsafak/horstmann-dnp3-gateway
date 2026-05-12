@@ -1,4 +1,5 @@
-# Horstmann Smart Logger DNP3 Gateway - container image
+# EnerjiOne DNP3 Gateway - container image
+# (Horstmann SN2 cihazlarindan DNP3 ile veri toplayip NATS JetStream'e basar.)
 #
 # Calisma akisi:
 #   - Tek imaj, N container: her gateway icin ayri container, ayri .env.
@@ -10,17 +11,17 @@
 #
 # Build:
 #   # hizli (saf python, string DESTEKLENMEZ - yalnizca numeric tip okumalar):
-#   docker build -t hsl/dnp3-gateway:latest .
+#   docker build -t e1/dnp3-gateway:latest .
 #
 #   # tam ozellik (yadnp3, string + Group 110 destegi - kaynaktan derler, ~10dk):
-#   docker build --build-arg DNP3_LIBRARY=yadnp3 -t hsl/dnp3-gateway:latest .
+#   docker build --build-arg DNP3_LIBRARY=yadnp3 -t e1/dnp3-gateway:latest .
 #
 # Run (tek instance):
 #   docker run --rm -d --name gw-001 \
 #     --env-file ./gateways/GW-001/.env \
-#     -v hsl-gw-001-state:/app/.gateway_state \
+#     -v e1-gw-001-state:/app/.gateway_state \
 #     -p 8020:8020 \
-#     hsl/dnp3-gateway:latest
+#     e1/dnp3-gateway:latest
 #
 # Coklu instance: bkz. docs/DOCKER.md ve scripts/render_compose.py.
 
@@ -50,10 +51,10 @@ FROM python:${PYTHON_VERSION}-slim-bookworm AS runtime
 
 ARG DNP3_LIBRARY
 
-LABEL org.opencontainers.image.title="horstmann-dnp3-gateway" \
+LABEL org.opencontainers.image.title="enerjione-dnp3-gateway" \
       org.opencontainers.image.vendor="Form Elektrik" \
       org.opencontainers.image.source="https://github.com/fikretsafak/horstmann-dnp3-gateway" \
-      org.opencontainers.image.description="DNP3 master gateway: telemetry collection -> RabbitMQ"
+      org.opencontainers.image.description="EnerjiOne DNP3 master gateway: telemetry collection -> NATS JetStream"
 
 ENV PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
@@ -65,10 +66,10 @@ ENV PIP_NO_CACHE_DIR=1 \
     DNP3_LIBRARY=${DNP3_LIBRARY}
 
 # Non-root user: dnp3 outbound TCP icin yeterli, root yetkisi gereksiz.
-RUN groupadd --system --gid 1000 hsl \
-    && useradd --system --uid 1000 --gid hsl --home /app --shell /usr/sbin/nologin hsl \
+RUN groupadd --system --gid 1000 e1 \
+    && useradd --system --uid 1000 --gid e1 --home /app --shell /usr/sbin/nologin e1 \
     && mkdir -p /app /app/.gateway_state \
-    && chown -R hsl:hsl /app
+    && chown -R e1:e1 /app
 
 WORKDIR /app
 
@@ -90,13 +91,13 @@ RUN if [ "${DNP3_LIBRARY}" = "yadnp3" ]; then \
     fi
 
 # Kaynak kodu son katman — sadece kod degistiginde rebuild.
-COPY --chown=hsl:hsl src /app/src
-COPY --chown=hsl:hsl pyproject.toml VERSION /app/
-COPY --chown=hsl:hsl docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY --chown=e1:e1 src /app/src
+COPY --chown=e1:e1 pyproject.toml VERSION /app/
+COPY --chown=e1:e1 docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh \
     && pip install --no-deps -e /app
 
-USER hsl
+USER e1
 
 EXPOSE 8020
 

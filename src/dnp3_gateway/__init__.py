@@ -1,8 +1,8 @@
-"""Horstmann Smart Logger DNP3 Gateway paketi.
+"""EnerjiOne DNP3 Gateway paketi.
 
 DNP3 protokolu uzerinden Horstmann SN 2.0 cihazlarina baglanip sahadan okunan
-sinyalleri RabbitMQ uzerinden catinin tag-engine servisine ileten standalone
-gateway servisi.
+sinyalleri NATS JetStream uzerinden cati'nin tag-engine servisine ileten
+standalone gateway servisi.
 """
 
 from pathlib import Path

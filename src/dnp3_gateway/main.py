@@ -6,10 +6,12 @@ Calisma akisi:
        konfigurasyon ceker ve `GatewayState`'i gunceller.
     3. Ana thread `default_poll_interval_sec` araliginda uyanip okunma vakti
        gelen cihazlari `poller.run_poll_cycle` ile okur/yayinlar.
-    4. SIGINT/SIGTERM alindiginda graceful shutdown:
+       Telemetri NATS JetStream'e basilir (primary publisher).
+    4. SIGINT/SIGTERM/SIGBREAK alindiginda graceful shutdown:
          - config refresh thread durdurulur
          - poller kapanir
-         - DNP3 session'lari + RabbitMQ kanali kapatilir
+         - DNP3 session'lari + JetStream baglantisi kapanir
+         - outbox retrier durdurulur
          - health HTTP sunucusu kapatilir
 """
 
@@ -20,6 +22,7 @@ import signal
 import time
 from pathlib import Path
 from threading import Event, Thread
+from typing import Any
 
 from dnp3_gateway import __version__
 from dnp3_gateway.adapters import TelemetryReader, build_adapter
@@ -28,7 +31,7 @@ from dnp3_gateway.backend import BackendConfigClient, GatewayConfigError
 from dnp3_gateway.config import Settings, settings
 from dnp3_gateway.health_server import GatewayMetrics, start_health_server
 from dnp3_gateway.logging_setup import configure_logging, register_secret
-from dnp3_gateway.messaging import Outbox, OutboxRetrier, RabbitPublisher
+from dnp3_gateway.messaging import Outbox, OutboxRetrier
 from dnp3_gateway.messaging.resilient_publisher import ResilientPublisher
 from dnp3_gateway.poller import run_poll_cycle
 from dnp3_gateway.state import GatewayState
@@ -46,10 +49,13 @@ def _print_console_banner(
 
     host = cfg.worker_health_host
     port = actual_health_port
-    health_url = f"http://{host}:{port}/health"
+    # Banner'da gosterilen URL: 0.0.0.0 bind container icindir, kullanici
+    # tarayicidan/curl'den asla 0.0.0.0:PORT yazmaz. Loopback'e dusur.
+    display_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
+    health_url = f"http://{display_host}:{port}/health"
     config_path = f"{cfg.backend_api_url.rstrip('/')}/gateways/{identity.gateway_code}/config"
     print("", flush=True)
-    print("  --- Horstmann DNP3 Gateway ---", flush=True)
+    print("  --- EnerjiOne DNP3 Gateway ---", flush=True)
     print(f"  Surum ............ {__version__}", flush=True)
     print(f"  GATEWAY_CODE ..... {identity.gateway_code}", flush=True)
     print(f"  Instance id ...... {identity.instance_id}", flush=True)
@@ -186,6 +192,33 @@ def _run_config_refresh(
                         consecutive_failures,
                         err,
                     )
+        except Exception as exc:  # noqa: BLE001
+            # GatewayConfigError disinda beklenmedik bir hata: pydantic
+            # ValidationError, requests.exceptions.SSLError, ConnectionResetError,
+            # urllib3 dekoder vb. Bu thread oldukcecekse gateway icin
+            # "/health: config_refresh_failing" sessiz kalir ve config bir daha
+            # YENILENMEZ. Bunu engellemek icin general Exception'i yakalayip
+            # state'e yaziyoruz; backoff loop'u devam eder.
+            err = f"unexpected_error: {type(exc).__name__}: {exc}"
+            consecutive_failures += 1
+            try:
+                state.record_refresh_error(err)
+            except Exception:  # noqa: BLE001
+                # state.record_refresh_error de basarisiz olursa thread olmesin
+                pass
+            if consecutive_failures in (1, 5, 30, 100, 1000):
+                logger.exception(
+                    "config_refresh_unexpected_error gateway=%s consecutive=%d",
+                    client.gateway_code,
+                    consecutive_failures,
+                )
+            else:
+                logger.debug(
+                    "config_refresh_unexpected_error gateway=%s consecutive=%d error=%s",
+                    client.gateway_code,
+                    consecutive_failures,
+                    err,
+                )
         # Exponential backoff: base * 2^n, ±%20 jitter, cap 300s
         backoff = min(max_backoff, base_interval * (2 ** min(consecutive_failures - 1, 8)))
         jitter = backoff * random.uniform(-0.2, 0.2)
@@ -198,12 +231,28 @@ def _install_signal_handlers(stop_event: Event) -> None:
         logger.info("signal_received signum=%s shutdown=starting", signum)
         stop_event.set()
 
-    for sig in (signal.SIGINT, signal.SIGTERM):
+    # Platform bazli sinyal listesi:
+    #   - SIGINT (Ctrl+C): tum platformlarda
+    #   - SIGTERM: POSIX (Linux/macOS); Windows'ta var ama event-driven
+    #     (NSSM stop'ta tetiklenmez)
+    #   - SIGBREAK (Ctrl+Break / Windows console close): SADECE Windows.
+    #     NSSM "AppStopMethodConsole" Ctrl+Break gonderir -> SIGBREAK.
+    signals_to_install = [signal.SIGINT, signal.SIGTERM]
+    sigbreak = getattr(signal, "SIGBREAK", None)
+    if sigbreak is not None:
+        signals_to_install.append(sigbreak)
+    for sig in signals_to_install:
         try:
             signal.signal(sig, _handler)
-        except (ValueError, OSError):
-            # Windows alt thread'lerde bazi sinyaller atanamaz; gecici gec
-            pass
+        except (ValueError, OSError) as exc:
+            # Windows alt thread'lerde bazi sinyaller atanamaz; sessiz gecmek
+            # yerine WARN log atalim ki "neden Ctrl+Break calismadi" debug edilebilir.
+            logger.warning(
+                "signal_handler_install_failed signal=%s error=%s — bu sinyal "
+                "graceful shutdown'i tetiklemeyecek; manuel restart gerekebilir",
+                sig,
+                exc,
+            )
 
 
 def _tls_verify_param(cfg: Settings) -> bool | str:
@@ -216,20 +265,43 @@ def _tls_verify_param(cfg: Settings) -> bool | str:
 
 def run(current_settings: Settings | None = None) -> int:
     cfg = current_settings or settings
+    # Iki asamali logging: identity'yi bilmeden once minimal (stdout-only)
+    # konfigure ederiz ki bootstrap log'lari kaybolmasin. Identity'yi
+    # ogrendikten sonra TEKRAR konfigure ederiz; bu sefer per-instance
+    # rotating file handler da acilir (LOG_FILE_PATH set ise).
     configure_logging(level=cfg.log_level, fmt=cfg.log_format)
 
     identity = bootstrap_gateway_identity(settings=cfg, app_version=__version__)
-    # Sirli verileri (token, rabbitmq parolasi vb.) log redaction listesine
+    # Identity hazir — rotating dosya handler'i da ekleyerek logging'i tekrar
+    # yapilandir (idempotent: eski handler'lar temizlenir).
+    configure_logging(
+        level=cfg.log_level,
+        fmt=cfg.log_format,
+        file_path=cfg.log_file_path,
+        file_max_bytes=cfg.log_file_max_bytes,
+        file_backup_count=cfg.log_file_backup_count,
+        gateway_code=identity.gateway_code,
+        instance_id=identity.instance_id,
+    )
+    # Sirli verileri (token, NATS/RabbitMQ parolasi) log redaction listesine
     # kaydet — boylece exception/3rd party log'lara kazara sizmasin. Bu
     # cagri configure_logging SONRASI yapilmali (filter aktif olduktan).
     try:
         register_secret(identity.token)
-        # RabbitMQ URL parolasini ayikla (amqp://user:PASSWORD@host)
+        if cfg.gateway_refresh_token:
+            register_secret(cfg.gateway_refresh_token)
         from urllib.parse import urlparse as _urlparse
 
-        _rmq_parsed = _urlparse(cfg.rabbitmq_url)
-        if _rmq_parsed.password:
-            register_secret(_rmq_parsed.password)
+        # NATS URL parolasi (primary publisher): nats://user:PASSWORD@host
+        _nats_parsed = _urlparse(cfg.nats_url) if cfg.nats_url else None
+        if _nats_parsed and _nats_parsed.password:
+            register_secret(_nats_parsed.password)
+        # RabbitMQ URL parolasi (LEGACY — gateway artik kullanmiyor ama eski
+        # .env'lerden gelirse log'a sizmasin diye yine de redact ediyoruz)
+        if cfg.rabbitmq_url:
+            _rmq_parsed = _urlparse(cfg.rabbitmq_url)
+            if _rmq_parsed.password:
+                register_secret(_rmq_parsed.password)
     except Exception:  # noqa: BLE001
         # Secret kayit hatasi gateway'i durdurmamali
         pass
@@ -251,6 +323,15 @@ def run(current_settings: Settings | None = None) -> int:
         cfg.gateway_mode,
         cfg.backend_api_url,
     )
+    # Deprecation uyarisi: nats_dual_publish_enabled artik anlamsiz (JetStream
+    # tek yol). Operator eski .env'den geliyorsa bilgilendir.
+    if cfg.nats_dual_publish_enabled:
+        logger.warning(
+            "nats_dual_publish_enabled=True ayarlanmis ama DEPRECATED — "
+            "gateway 0.4.x'te JetStream artik tek primary publisher, dual-publish "
+            "modunu yok sayiyor. .env'den NATS_DUAL_PUBLISH_ENABLED=false yapin "
+            "veya satiri silin."
+        )
 
     # Disk cache: backend kapali iken / container restart'ta gateway en son
     # gordugu config ile (cihaz IP'leri, sinyal listesi, master_address)
@@ -287,6 +368,21 @@ def run(current_settings: Settings | None = None) -> int:
     def _reader_provider() -> Any:
         return reader_holder["reader"]
 
+    # /refresh-all endpoint icin auth token. GATEWAY_REFRESH_TOKEN set edilmemis
+    # ise endpoint TAMAMEN DEVRE DISI kalir (health_server.py refresh_token
+    # bos olunca 503 doner). Eski fallback "GATEWAY_TOKEN'a dus" kaldirildi —
+    # CHANGELOG ile tutarsizdi ve token leak'i tum gateway'e yayan attack
+    # surface yaratiyordu.
+    refresh_endpoint_token = (cfg.gateway_refresh_token or "").strip()
+    if not refresh_endpoint_token:
+        logger.warning(
+            "refresh_all_endpoint_disabled gateway=%s — GATEWAY_REFRESH_TOKEN "
+            ".env'de bos. Backend operator tetigi (`/refresh-all`) cagrildiginda "
+            "503 doner. Operator paneli bu ozelligi kullanacaksa .env'e yuksek-entropy "
+            "GATEWAY_REFRESH_TOKEN atayin.",
+            identity.gateway_code,
+        )
+
     health, metrics, actual_health_port = start_health_server(
         host=cfg.worker_health_host,
         port=cfg.worker_health_port,
@@ -298,22 +394,42 @@ def run(current_settings: Settings | None = None) -> int:
         app_environment=identity.app_environment,
         publisher_provider=_publisher_provider,
         reader_provider=_reader_provider,
-        # Backend bu endpoint'i Bearer + GATEWAY_TOKEN ile cagirir.
-        refresh_token=identity.token,
+        # Backend bu endpoint'i Bearer + refresh_token ile cagirir.
+        refresh_token=refresh_endpoint_token,
     )
     # Banner: gercek (auto-assigned olabilir) health portunu yansitabilmek icin
     # health_server start sonrasi yazdirilir.
     _print_console_banner(cfg=cfg, identity=identity, actual_health_port=actual_health_port)
 
-    broker = RabbitPublisher(
-        url=cfg.rabbitmq_url,
-        exchange=cfg.rabbitmq_exchange,
-        routing_key=cfg.rabbitmq_routing_key,
+    # PRIMARY publisher: NATS JetStream. Gateway artik telemetriyi DIRECT
+    # JetStream'e basar. RabbitMQ telemetri akisindan kaldirildi (alarm.created
+    # icin backend tarafinda kalmaya devam ediyor — gateway onunla ilgilenmez).
+    #
+    # NATS server'a bagklanti ANINDA olmayabilir — JetStreamPublisher non-blocking
+    # baslar (background'da reconnect). O sirada publish() raise eder, mesajlar
+    # outbox'a yazilir ve baglanti gelince retrier bosaltir. Mesaj kaybi YOK.
+    from dnp3_gateway.messaging.jetstream_publisher import JetStreamPublisher
+
+    broker = JetStreamPublisher.create(
+        url=cfg.nats_url,
+        subject_prefix=cfg.nats_subject_prefix,
+        gateway_code=identity.gateway_code,
+        connect_timeout_sec=cfg.nats_connect_timeout_sec,
+        publish_timeout_sec=cfg.nats_publish_timeout_sec,
     )
-    # Outbox: RabbitMQ erisilemezse mesajlari diske yaz, retrier sonra gonderir.
-    # Process restart'a dayanikli (kalici SQLite); at-least-once delivery.
-    # Disk-full koruma: max_pending asilirsa publisher OutboxFullError raise
-    # eder, poller cycle'i durdurur.
+    if broker is None:
+        # nats-py paketi yok (production'da requirements'ta; sadece dev koruma).
+        logger.error(
+            "jetstream_publisher_create_failed — nats-py paketi yuklu degil. "
+            "Gateway baslamiyor. requirements.txt + pip install -r"
+        )
+        raise SystemExit(1)
+
+    # Outbox: JetStream'e (veya broker'a) yayinlanmamis mesajlari diske yazar,
+    # retrier sonra gonderir. Process restart'a dayanikli (kalici SQLite);
+    # at-least-once delivery. Disk-full koruma: max_pending asilirsa publisher
+    # OutboxFullError raise eder, poller cycle'i durdurur (sessiz veri kaybi
+    # yerine kontrollu duraklatma).
     outbox_path = Path(cfg.gateway_state_dir) / f"outbox_{identity.gateway_code}.db"
     outbox = Outbox(outbox_path, max_pending=cfg.outbox_max_pending)
     pending = outbox.pending_count()
@@ -330,6 +446,7 @@ def run(current_settings: Settings | None = None) -> int:
             "(SELECT * FROM outbox_dead_letter ORDER BY moved_at DESC)",
             dead_letter_count,
         )
+
     publisher = ResilientPublisher(broker=broker, outbox=outbox)
     # Health server'in /health/metrics endpoint'leri publisher uzerinden
     # outbox + circuit breaker durumunu okuyabilsin diye holder'a yaz
@@ -352,8 +469,8 @@ def run(current_settings: Settings | None = None) -> int:
     if cfg.is_mock_mode:
         logger.warning(
             "TELEMETRI_KAYNAGI=MOCK — sahadan DNP3 okunmuyor; uretici degerler. "
-            "Cati (RabbitMQ) akisi calisir ama kaynak cihaz degil. Gercek okuma: "
-            "GATEWAY_MODE=dnp3, nfm-dnp3 (dnp3py), cihaz IP/port/DNP3 adresi backend config."
+            "JetStream akisi calisir ama kaynak cihaz degil. Gercek okuma: "
+            "GATEWAY_MODE=dnp3, yadnp3 wheel kurulu, cihaz IP/port/DNP3 adresi backend config."
         )
     else:
         logger.info(
@@ -407,7 +524,13 @@ def run(current_settings: Settings | None = None) -> int:
             # callback'i ile cache'e yazilacak ve sonraki cycle'larda
             # poller normal akista publish edecek.
             try:
-                if state.take_refresh_request() and hasattr(reader, "refresh_all_devices"):
+                # Shutdown sirasinda refresh-all tetiklenirse reader.close()
+                # ile yarisi olabilir; stop_event onceligi ver, tetikleme.
+                if (
+                    not stop_event.is_set()
+                    and state.take_refresh_request()
+                    and hasattr(reader, "refresh_all_devices")
+                ):
                     ok, total = reader.refresh_all_devices()  # type: ignore[attr-defined]
                     logger.info(
                         "manual_refresh_all_triggered ok=%d total=%d", ok, total
@@ -424,6 +547,7 @@ def run(current_settings: Settings | None = None) -> int:
                 max_parallel=cfg.max_parallel_devices,
                 device_timeout_sec=cfg.device_poll_timeout_sec,
                 cycle_timeout_sec=cfg.cycle_timeout_sec,
+                stop_event=stop_event,
             )
             if due_count or published:
                 metrics.record_cycle(devices=due_count, published=published)
@@ -472,7 +596,7 @@ def run(current_settings: Settings | None = None) -> int:
         except Exception:  # noqa: BLE001
             logger.debug("retrier_stop_error", exc_info=True)
 
-        # 4) RabbitPublisher: connection/channel kapanir
+        # 4) Broker publisher (JetStream): drain + connection kapanir
         try:
             publisher.close()
         except Exception:  # noqa: BLE001

@@ -1072,6 +1072,33 @@ class Dnp3TelemetryReader(TelemetryReader):
                     logger.debug("dnp3_session_close_error", exc_info=True)
             self._sessions.clear()
 
+    def forget_devices(self, active_device_codes: set[str]) -> int:
+        """Backend config'inden silinen cihazlarin DNP3 session'larini kapat.
+
+        Base class default no-op'tur; bu adapter `_sessions` dict + per-device
+        cache (`_device_event_cache`, `_device_baseline_at`) tutar. Cihaz
+        config'ten silinince bunlar bellekte zombie kalir; her cycle'da
+        gereksiz TCP socket + memory tutulur ve `_get_session` polled cihaza
+        yanlislikla cevap verebilir. Bu metod silinen tum cihazlarin session'lari
+        + cache'lerini temizler ve kac cihazin silindigini dondurur.
+        """
+        cleaned = 0
+        with self._sessions_lock:
+            stale = [code for code in self._sessions if code not in active_device_codes]
+        for code in stale:
+            with self._sessions_lock:
+                session = self._sessions.pop(code, None)
+            if session is not None:
+                try:
+                    session.close()
+                except Exception:  # noqa: BLE001
+                    logger.debug("dnp3_session_forget_close_failed", exc_info=True)
+            # Per-device cache yapilarini temizle
+            self._device_event_cache.pop(code, None)
+            self._device_baseline_at.pop(code, None)
+            cleaned += 1
+        return cleaned
+
     def _evict_session(self, device_code: str) -> None:
         """Hatali/dusen session'i cache'den dus; bir sonraki read_device yenisini acar."""
         with self._sessions_lock:

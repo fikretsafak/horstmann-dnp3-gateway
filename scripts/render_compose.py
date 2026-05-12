@@ -11,7 +11,7 @@ CLI:
         --token "32-karakter-token" \
         --name "Saha A SCADA" \
         --backend-url https://hsl.formelektrik.com/api/v1 \
-        --rabbitmq-url amqp://hsl:secret@rmq.hsl:5672/ \
+        --nats-url nats://hsl-nats:4222 \
         --host-port 8020 \
         --image ghcr.io/fikretsafak/horstmann-dnp3-gateway:0.4.3 \
         --output ./gw-001.yml
@@ -73,7 +73,7 @@ def render_compose(
     token: str,
     name: str,
     backend_url: str,
-    rabbitmq_url: str,
+    nats_url: str,
     host_port: int,
     image: str = "ghcr.io/fikretsafak/horstmann-dnp3-gateway:latest",
     app_environment: str = "production",
@@ -96,7 +96,7 @@ def render_compose(
             "GATEWAY_TOKEN": token,
             "GATEWAY_NAME": name,
             "BACKEND_API_URL": backend_url.rstrip("/"),
-            "RABBITMQ_URL": rabbitmq_url,
+            "NATS_URL": nats_url,
             "HOST_HEALTH_PORT": str(host_port),
             "IMAGE": image,
             "APP_ENVIRONMENT": app_environment,
@@ -110,7 +110,7 @@ def render_env(
     token: str,
     name: str,
     backend_url: str,
-    rabbitmq_url: str,
+    nats_url: str,
     app_environment: str = "production",
     template_path: Path = DEFAULT_ENV_TEMPLATE_PATH,
 ) -> str:
@@ -125,7 +125,7 @@ def render_env(
             "GATEWAY_TOKEN": token,
             "GATEWAY_NAME": name,
             "BACKEND_API_URL": backend_url.rstrip("/"),
-            "RABBITMQ_URL": rabbitmq_url,
+            "NATS_URL": nats_url,
             "APP_ENVIRONMENT": app_environment,
         },
     )
@@ -139,16 +139,16 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Gateway token. Verilmezse rastgele 48-karakter uretilir ve stderr'a yazilir.",
     )
-    p.add_argument("--name", default="Horstmann SN2 Gateway", help="Insan-okur isim")
+    p.add_argument("--name", default="EnerjiOne DNP3 Gateway", help="Insan-okur isim")
     p.add_argument(
         "--backend-url",
         required=True,
         help="Backend public URL (orn. https://hsl.formelektrik.com/api/v1)",
     )
     p.add_argument(
-        "--rabbitmq-url",
+        "--nats-url",
         required=True,
-        help="RabbitMQ AMQP URL (orn. amqp://user:pass@rmq:5672/)",
+        help="NATS JetStream URL (orn. nats://hsl-nats:4222 veya tls://nats.host:4222)",
     )
     p.add_argument(
         "--host-port",
@@ -181,9 +181,17 @@ def _build_arg_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = _build_arg_parser().parse_args(argv)
+    token_generated = args.token is None
     token = args.token or generate_token()
-    if args.token is None:
-        print(f"[render_compose] generated token (>=48 char): {token}", file=sys.stderr)
+    if token_generated:
+        # Token'i konsola/stderr'a yazma — screen-share, CI log, omuz-ustu
+        # gozlem ile sizma riski. Sadece --output dosyasina yaz. stdout
+        # render edilen yaml/.env ise token zaten dosya icindedir.
+        print(
+            "[render_compose] yeni token uretildi (>=48 char). "
+            "--output dosyasinin icinde GATEWAY_TOKEN= satirinda; konsolda gosterilmiyor.",
+            file=sys.stderr,
+        )
 
     if args.render_env:
         rendered = render_env(
@@ -191,7 +199,7 @@ def main(argv: list[str] | None = None) -> int:
             token=token,
             name=args.name,
             backend_url=args.backend_url,
-            rabbitmq_url=args.rabbitmq_url,
+            nats_url=args.nats_url,
             app_environment=args.app_environment,
         )
     else:
@@ -200,7 +208,7 @@ def main(argv: list[str] | None = None) -> int:
             token=token,
             name=args.name,
             backend_url=args.backend_url,
-            rabbitmq_url=args.rabbitmq_url,
+            nats_url=args.nats_url,
             host_port=args.host_port,
             image=args.image,
             app_environment=args.app_environment,
@@ -210,8 +218,23 @@ def main(argv: list[str] | None = None) -> int:
         out_path = Path(args.output)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(rendered, encoding="utf-8")
-        print(f"[render_compose] yazildi: {out_path}", file=sys.stderr)
+        # Unix izinleri (mode 0o600 — sadece sahibi). Windows'ta os.chmod
+        # NTFS ACL'i tam manipule etmez ama "read-only" bilgilendirici;
+        # gercek koruma icin admin tarafindan icacls/NTFS ACL ayarlanmalidir.
+        try:
+            out_path.chmod(0o600)
+        except OSError:
+            pass
+        print(f"[render_compose] yazildi: {out_path}  (mode 0600)", file=sys.stderr)
     else:
+        if token_generated:
+            print(
+                "[render_compose] UYARI: --output verilmedi; rendered yaml/.env "
+                "ICINDE token stdout'a yaziliyor. Bu cikti'yi disk'e bos bir "
+                "dizine yonlendirip (>> dosya) dosya izinlerini hemen kisitlayin "
+                "veya --output kullanin.",
+                file=sys.stderr,
+            )
         sys.stdout.write(rendered)
     return 0
 

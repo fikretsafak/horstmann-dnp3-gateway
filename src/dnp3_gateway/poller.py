@@ -4,7 +4,7 @@ Bu modul her cihaz icin ayri okuma + publish yapar. `main.py` bu fonksiyonu ana
 thread dongusunde periyodik olarak cagirir. Tek gateway 100 cihaza kadar olculdugu
 icin seri okuma (100 x timeout) bir cycle'i saniyeler surer; bu yuzden
 `max_parallel` parametresi ile esik ustunde cihaz varsa ThreadPoolExecutor ile
-paralel okuma yapilir. Publisher thread-safe oldugu icin (bkz. rabbit_publisher)
+paralel okuma yapilir. Publisher thread-safe oldugu icin (bkz. jetstream_publisher)
 coklu thread ayni kanali paylasabilir.
 
 Kritik dayaniklilik ozellikleri:
@@ -23,14 +23,19 @@ from __future__ import annotations
 import atexit
 import logging
 import threading
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, wait
+from concurrent.futures import (
+    FIRST_COMPLETED,
+    ThreadPoolExecutor,
+    TimeoutError as FuturesTimeoutError,
+    wait,
+)
 from datetime import datetime, timezone
 from typing import Any
 from uuid import uuid4
 
 from dnp3_gateway.adapters import SignalReading, TelemetryReader
 from dnp3_gateway.backend import DeviceConfig, SignalConfig
-from dnp3_gateway.messaging import OutboxFullError, RabbitPublisher  # noqa: F401  (geri uyumluluk)
+from dnp3_gateway.messaging import OutboxFullError
 from dnp3_gateway.state import GatewayState
 
 logger = logging.getLogger(__name__)
@@ -218,6 +223,7 @@ def run_poll_cycle(
     max_parallel: int = 1,
     device_timeout_sec: float = DEFAULT_DEVICE_POLL_TIMEOUT_SEC,
     cycle_timeout_sec: float = DEFAULT_CYCLE_TIMEOUT_SEC,
+    stop_event: threading.Event | None = None,
 ) -> int:
     """State'ten okunma vakti gelen cihazlari cekip okur.
 
@@ -269,10 +275,27 @@ def run_poll_cycle(
     # Disk-full breaker erken kontrol: publisher zaten dolu durumdaysa cycle'a
     # girmeden mark_read yap ve cik (yeni publish denemesi yok)
     if getattr(publisher, "outbox_full", False):
+        # Eski yontem: `getattr(...) and publisher._outbox.pending_count() or -1`
+        # — None and X or -1 idiomu Python'da yanlis: 0 dondurse de -1'e dusuyordu.
+        # Defansif: publisher'in pending_count() method'unu direkt cagir; yoksa -1.
+        pending = -1
+        pending_fn = getattr(publisher, "pending_count", None)
+        if callable(pending_fn):
+            try:
+                pending = int(pending_fn())
+            except Exception:  # noqa: BLE001
+                pending = -1
+        else:
+            outbox = getattr(publisher, "_outbox", None)
+            if outbox is not None:
+                try:
+                    pending = int(outbox.pending_count())
+                except Exception:  # noqa: BLE001
+                    pending = -1
         logger.warning(
             "poll_cycle_skipped_outbox_full pending=%d devices=%d — broker "
             "geri gelene kadar publish yapilmaz",
-            getattr(publisher, "_outbox", None) and publisher._outbox.pending_count() or -1,
+            pending,
             len(due),
         )
         # Mark_read yapma: cihazlar sonraki cycle'da yine due olur ama o cycle'da
@@ -282,6 +305,16 @@ def run_poll_cycle(
     if max_parallel <= 1 or len(due) == 1:
         total = 0
         for device in due:
+            # Shutdown sinyali: cycle ortasinda inflight publish'i bitirip cik.
+            # Kalan cihazlar bir sonraki sefer yine due olur — mark_read ETMIYORUZ
+            # ki shutdown sonrasi restart'ta hemen iletisim kurulsun.
+            if stop_event is not None and stop_event.is_set():
+                logger.info(
+                    "poll_cycle_stop_requested seri_yol kalan=%d islenen=%d",
+                    len(due) - (due.index(device)),
+                    due.index(device),
+                )
+                return total
             try:
                 count = poll_device(
                     gateway_code=gateway_code,
@@ -309,20 +342,74 @@ def run_poll_cycle(
     # Module-level pool: thread'ler reuse edilir; her cycle'da spawn/destroy
     # overhead'i yok. Pool capacity yetmezse yeniden create eder.
     pool = _get_or_create_pool(max_workers=workers)
-    futures = {
-        pool.submit(
+    import time as _time
+    # Her future'un baslama zamanini sakla → per-device timeout kontrolu
+    submit_time = _time.monotonic()
+    futures: dict = {}
+    future_start: dict = {}
+    for device in due:
+        fut = pool.submit(
             poll_device,
             gateway_code=gateway_code,
             device=device,
             signals=signals,
             reader=reader,
             publisher=publisher,
-        ): device
-        for device in due
-    }
+        )
+        futures[fut] = device
+        future_start[fut] = submit_time
     # Tum cycle icin global timeout: belirlenen sure asilirsa pending
-    # future'lar iptal edilir.
-    done, not_done = wait(futures.keys(), timeout=cycle_timeout_sec)
+    # future'lar iptal edilir. stop_event set'lenirse erken cik.
+    #
+    # Implementation: tek wait() yerine kucuk-quantum'lu loop. Boylece
+    # cycle_timeout (default 120s) dolmadan SIGTERM gelirse hemen reageriyoruz.
+    # Quantum: max 2s — Windows SCM 30s timeout altinda guvenli pay.
+    cycle_deadline = _time.monotonic() + max(0.1, float(cycle_timeout_sec))
+    pending: set = set(futures.keys())
+    done: set = set()
+    device_timed_out: set = set()
+    while pending:
+        remaining = cycle_deadline - _time.monotonic()
+        if remaining <= 0:
+            break
+        if stop_event is not None and stop_event.is_set():
+            logger.info(
+                "poll_cycle_stop_requested paralel_yol pending=%d done=%d",
+                len(pending),
+                len(done),
+            )
+            break
+        # 2sn'lik quantum'lar: stop_event'i sik kontrol eder, ama yine de
+        # done future'lari hemen topla
+        quantum = min(2.0, max(0.1, remaining))
+        new_done, pending = wait(
+            pending, timeout=quantum, return_when=FIRST_COMPLETED
+        )
+        done.update(new_done)
+        # Per-device timeout: device_timeout_sec'i asan future'lari iptal
+        # et + mark_read uygula. Pool worker'i hemen serbest kalmaz (cancel
+        # running future'u interrupt etmez) ama mark_read yapildigi icin
+        # sonraki cycle'da cihaz yine due olur ve yeni denemeden once
+        # esitlemeden ricat eder.
+        if pending and device_timeout_sec > 0:
+            now = _time.monotonic()
+            for fut in list(pending):
+                elapsed = now - future_start.get(fut, now)
+                if elapsed >= device_timeout_sec:
+                    device = futures[fut]
+                    fut.cancel()
+                    state.mark_read(device.code, now_monotonic)
+                    device_timed_out.add(fut)
+                    pending.discard(fut)
+                    logger.warning(
+                        "poll_device_per_device_timeout gateway=%s device=%s "
+                        "elapsed=%.1fs timeout=%.1fs — cancel + mark_read",
+                        gateway_code,
+                        device.code,
+                        elapsed,
+                        device_timeout_sec,
+                    )
+    not_done = pending
 
     # Bitenlerden sonuclari topla
     for future in done:
